@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#f3f0e8">
+  <meta name="description" content="Scaffold Seeds helps UK primary teachers design temporary supports that preserve challenge and grow independence.">
+  <title>Scaffold Seeds</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <a class="skip-link" href="#main-content">Skip to main content</a>
+
+  <div class="app-shell">
+    <aside class="sidebar" id="sidebar" aria-label="Primary navigation">
+      <div class="brand" aria-label="Scaffold Seeds home">
+        <span class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 36 36" role="img"><path d="M18 29V16M18 22c-5.5 0-9-3.3-9-8.5 5.5-.6 9 2.4 9 8.5ZM18 18c0-5.4 3.4-8.6 9-8.5 0 5.3-3.5 8.5-9 8.5Z"/></svg>
+        </span>
+        <span><strong>Scaffold</strong><em>Seeds</em></span>
+      </div>
+
+      <nav class="nav-list" id="primary-nav">
+        <button class="nav-item is-active" data-view="home" aria-current="page">
+          <span data-icon="home" aria-hidden="true"></span><span>Home</span>
+        </button>
+        <button class="nav-item" data-view="create">
+          <span data-icon="create" aria-hidden="true"></span><span>Create</span>
+        </button>
+        <button class="nav-item" data-view="library">
+          <span data-icon="library" aria-hidden="true"></span><span>Library</span>
+        </button>
+        <button class="nav-item" data-view="knowledge">
+          <span data-icon="knowledge" aria-hidden="true"></span><span>Knowledge</span>
+        </button>
+        <button class="nav-item" data-view="print">
+          <span data-icon="print" aria-hidden="true"></span><span>Print Studio</span>
+        </button>
+        <button class="nav-item" data-view="settings">
+          <span data-icon="settings" aria-hidden="true"></span><span>Settings</span>
+        </button>
+      </nav>
+
+      <div class="sidebar-note">
+        <span class="eyebrow">Our principle</span>
+        <p>Remove the barrier.<br>Preserve the thinking.</p>
+      </div>
+    </aside>
+
+    <div class="app-column">
+      <header class="topbar">
+        <button class="icon-button menu-button" id="menu-button" aria-label="Open navigation" aria-expanded="false" aria-controls="sidebar">
+          <span data-icon="menu" aria-hidden="true"></span>
+        </button>
+        <div class="topbar-title">
+          <span class="eyebrow" id="section-kicker">Your thinking space</span>
+          <h1 id="section-title">Home</h1>
+        </div>
+        <div class="topbar-actions">
+          <span class="local-status"><span></span> Saved locally</span>
+          <button class="button button-primary button-compact" data-action="new-scaffold">
+            <span data-icon="plus" aria-hidden="true"></span> New scaffold
+          </button>
+        </div>
+      </header>
+
+      <main id="main-content" tabindex="-1"></main>
+    </div>
+  </div>
+
+  <div class="sidebar-scrim" id="sidebar-scrim" hidden></div>
+  <div class="modal-layer" id="modal-layer" hidden></div>
+  <div class="toast-region" id="toast-region" aria-live="polite" aria-atomic="true"></div>
+  <div id="print-root" aria-hidden="true"></div>
+
+  <script src="data.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
