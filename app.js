@@ -28,10 +28,13 @@
     activeScaffold: null,
     libraryFilters: { query: "", year: "all", subject: "all", favourite: false },
     knowledgeSubject: "english",
+    knowledgeProfile: "reading",
+    knowledgeLens: "ideas",
     print: {
       paper: "a4",
       orientation: "portrait",
       colour: "colour",
+      format: "workpage",
       teacherGuidance: true,
       answers: false,
       largePrint: false,
@@ -124,6 +127,8 @@
       misconception: saved?.misconception || "",
       intention: saved?.intention || "Keep the core thinking with pupils while making the route into the task clear.",
       tags: saved?.tags || "",
+      familyId: saved?.familyId || "",
+      representation: saved?.representation || "",
       editingId: saved?.editingId || null
     };
   }
@@ -169,6 +174,37 @@
 
   function barrierById(id) {
     return DATA.barriers.find(barrier => barrier.id === id);
+  }
+
+  function familyById(id) {
+    return DATA.scaffoldFamilies.find(family => family.id === id) || DATA.scaffoldFamilies[0];
+  }
+
+  function brainBySubject(id = state.draft.subject) {
+    return DATA.subjectBrains[id] || DATA.subjectBrains.english;
+  }
+
+  function profileForDraft(draft = state.draft) {
+    const brain = brainBySubject(draft.subject);
+    const text = `${draft.topic || ""} ${draft.objective || ""} ${draft.situation || ""}`.toLowerCase();
+    return brain.profiles
+      .map((profile, index) => ({ profile, index, score: profile.keywords.reduce((score, keyword) => score + (text.includes(keyword) ? (keyword.includes(" ") ? 4 : 2) : 0), 0) }))
+      .sort((a, b) => b.score - a.score || a.index - b.index)[0]?.profile || brain.profiles[0];
+  }
+
+  function printFormatById(id = state.print.format) {
+    return DATA.printFormats.find(format => format.id === id) || DATA.printFormats[0];
+  }
+
+  function curriculumIntelligence(draft = state.draft) {
+    const subject = subjectById(draft.subject);
+    const brain = brainBySubject(draft.subject);
+    const profile = profileForDraft(draft);
+    const entry = currentEntry(draft);
+    const vocabulary = [...new Set([...(entry?.vocabulary || []), ...(profile.vocabulary || [])])].slice(0, 8);
+    const misconceptions = [...new Set([...(entry?.misconceptions || []), ...(profile.misconceptions || [])])];
+    const preferredFamilies = profile.families.filter(id => DATA.scaffoldFamilies.some(family => family.id === id));
+    return { subject, brain, profile, entry, vocabulary, misconceptions, preferredFamilies, representations: profile.representations || [] };
   }
 
   function curriculumEntries(subjectId = state.draft.subject, year = state.draft.year) {
@@ -243,6 +279,7 @@
 
   function newScaffold(preset = {}) {
     state.draft = normaliseDraft({ ...preset, stage: preset.stage || state.settings.defaultStage });
+    state.activeScaffold = null;
     state.createStep = 0;
     saveDraft();
     navigate("create");
@@ -328,18 +365,20 @@
   function renderCreate() {
     const stepNames = ["Context", "The barrier", "Analysis", "Design", "Review"];
     const content = [renderContextStep, renderSituationStep, renderAnalysisStep, renderDesignStep, renderReviewStep][state.createStep]();
+    const intelligence = curriculumIntelligence();
     const summary = state.draft.objective
       ? `<div class="context-summary"><h4>Current context</h4><p>${esc(state.draft.year)} · ${esc(subjectById(state.draft.subject).name)}<br>${esc(state.draft.objective)}</p></div>`
       : "";
     return `
       <div class="page-heading"><div><span class="eyebrow">A calm, five-part process</span><h2>Design from the barrier</h2><p>Start with what pupils need to think about—not with a pre-selected sheet.</p></div></div>
-      <div class="create-layout">
+      <div class="create-layout ${state.createStep === 4 ? "is-review" : ""}">
         <section class="create-card" aria-label="Scaffold creation step ${state.createStep + 1} of 5">${content}</section>
         <aside class="create-rail">
           <div class="progress-card"><h3>Your path</h3><div class="step-list">
             ${stepNames.map((name, index) => `<div class="step-item ${index === state.createStep ? "is-active" : index < state.createStep ? "is-complete" : ""}"><span class="step-dot">${index < state.createStep ? "✓" : index + 1}</span><span>${name}</span></div>`).join("")}
           </div></div>
           ${summary}
+          <div class="design-compass" style="--subject-colour:${intelligence.subject.colour}"><span class="eyebrow">Subject lens</span><strong>${esc(intelligence.profile.name)}</strong><p>${esc(intelligence.profile.disciplinary)}</p></div>
         </aside>
       </div>`;
   }
@@ -360,6 +399,7 @@
     }
     const entry = currentEntry();
     if (entry && !entry.objectives.includes(state.draft.objective)) state.draft.objective = entry.objectives[0];
+    const intelligence = curriculumIntelligence();
     return `${createHead(1, "Set the learning context", "A little precision here makes every later recommendation more useful.")}
       <div class="create-card-body"><div class="form-grid">
         <div class="form-field"><label for="year">Year group</label><div class="select-wrap"><select id="year" data-draft-field="year">${DATA.years.map(year => `<option ${year === state.draft.year ? "selected" : ""}>${esc(year)}</option>`).join("")}</select></div></div>
@@ -367,39 +407,70 @@
         <div class="form-field"><label for="topic">Curriculum area</label><div class="select-wrap"><select id="topic" data-draft-field="topic">${entries.map(item => `<option ${item.title === state.draft.topic ? "selected" : ""}>${esc(item.title)}</option>`).join("")}</select></div></div>
         <div class="form-field"><label for="phase">Lesson phase</label><div class="select-wrap"><select id="phase" data-draft-field="phase">${DATA.lessonPhases.map(phase => `<option ${phase === state.draft.phase ? "selected" : ""}>${esc(phase)}</option>`).join("")}</select></div></div>
         <div class="form-field span-2"><label for="objective">Learning objective <small>— curriculum-informed and fully editable</small></label><div class="select-wrap"><select id="objective" data-draft-field="objective">${(entry?.objectives || []).map(objective => `<option ${objective === state.draft.objective ? "selected" : ""}>${esc(objective)}</option>`).join("")}</select></div><input class="input" id="custom-objective" data-draft-field="objective" value="${esc(state.draft.objective)}" aria-label="Edit learning objective"><span class="field-hint">Use the wording that pupils will encounter in this lesson.</span></div>
+      </div>
+      <div class="curriculum-glance" style="--subject-colour:${intelligence.subject.colour}">
+        <div><span class="eyebrow">Big idea beneath this area</span><strong>${esc(intelligence.brain.bigIdeas[0])}</strong></div>
+        <div><span class="eyebrow">Threshold to protect</span><p>${esc(intelligence.profile.threshold)}</p></div>
+        <div><span class="eyebrow">Disciplinary thinking</span><p>${esc(intelligence.profile.disciplinary)}</p></div>
       </div></div>
       ${stepFooter({ back: false, nextLabel: "Describe the barrier" })}`;
   }
 
   function renderSituationStep() {
+    const intelligence = curriculumIntelligence();
     return `${createHead(2, "Where are pupils getting stuck?", "Describe what pupils can already do and the precise moment the learning begins to break down.")}
       <div class="create-card-body">
-        <div class="prompt-examples">
-          <button class="example-chip" data-action="use-example">They understand equivalent fractions but struggle to explain why they are equivalent.</button>
-          <button class="example-chip" data-action="use-example">They can identify persuasive techniques but cannot use them naturally in their own writing.</button>
-          <button class="example-chip" data-action="use-example">They understand evaporation but confuse it with boiling when they explain a change.</button>
+        <div class="designer-workspace">
+          <div class="designer-writing">
+            <div class="prompt-examples">
+              <button class="example-chip" data-action="use-example">They can identify the key information, but cannot decide how it connects to the conclusion.</button>
+              <button class="example-chip" data-action="use-example">They succeed with adult questions, but cannot choose the first step independently.</button>
+            </div>
+            <div class="form-field"><label for="situation">What do you notice?</label><textarea id="situation" class="situation-field" data-draft-field="situation" maxlength="800" placeholder="They can… but when they need to…">${esc(state.draft.situation)}</textarea><span class="counter">Describe the successful point first, then the precise breakdown.</span></div>
+            <div class="thinking-note">${icon("brain")}<span>Include existing strengths. A scaffold should begin exactly where independent success ends—not earlier.</span></div>
+          </div>
+          <aside class="live-guidance" id="live-guidance" aria-live="polite" style="--subject-colour:${intelligence.subject.colour}">${renderLiveGuidance()}</aside>
         </div>
-        <div class="form-field"><label for="situation">What do you notice?</label><textarea id="situation" class="situation-field" data-draft-field="situation" maxlength="800" placeholder="They can… but when they need to…">${esc(state.draft.situation)}</textarea><span class="counter">Specific observations lead to better scaffolds</span></div>
-        <div class="thinking-note">${icon("brain")}<span>Include existing strengths. A scaffold should begin exactly where independent success ends—not earlier.</span></div>
       </div>
       ${stepFooter({ nextLabel: "Analyse the barrier", nextAction: "analyse-barrier" })}`;
+  }
+
+  function renderLiveGuidance() {
+    const intelligence = curriculumIntelligence();
+    const ranked = scoreBarrierCandidates(state.draft).slice(0, 2).map(([id]) => barrierById(id)).filter(Boolean);
+    const representation = intelligence.representations[0];
+    return `<div class="live-guidance-head"><span class="live-pulse" aria-hidden="true"></span><div><span class="eyebrow">Quiet recommendations</span><h3>As you describe the difficulty</h3></div></div>
+      <section><span>Likely barrier${ranked.length === 1 ? "" : "s"}</span><div class="signal-pills">${ranked.map(item => `<em>${esc(item.name)}</em>`).join("")}</div></section>
+      <section><span>Misconception worth listening for</span><p>${esc(intelligence.misconceptions[0] || "Listen for the point where the subject relationship becomes insecure.")}</p></section>
+      <section><span>High-leverage language</span><p>${esc(intelligence.vocabulary.slice(0, 5).join(" · "))}</p></section>
+      ${representation ? `<section><span>Representation to consider</span><p><strong>${esc(representation.name)}</strong> — ${esc(representation.use)}.</p></section>` : ""}
+      <section><span>A useful teacher question</span><p>“${esc(intelligence.profile.questions[0])}”</p></section>`;
   }
 
   function renderAnalysisStep() {
     if (!state.draft.analysis.length) analyseBarrier();
     const selected = state.draft.selectedBarriers;
     const recommended = state.draft.recommendations.map(engineById);
+    const intelligence = curriculumIntelligence();
+    const representation = intelligence.representations[0];
     return `${createHead(3, "Consider the likely barrier", "These are reasoned suggestions, not labels. Keep, remove or add what matches your pupils.")}
       <div class="create-card-body">
         <div class="analysis-intro"><span class="analysis-mark">${icon("brain")}</span><div><h3>The difficulty may sit in more than one place</h3><p>Recommendations combine your description with the curriculum demand and common misconceptions for this area.</p></div></div>
+        <div class="pedagogy-map" style="--subject-colour:${intelligence.subject.colour}">
+          <section><span>Threshold concept</span><p>${esc(intelligence.profile.threshold)}</p></section>
+          <section><span>Prerequisite to check</span><p>${esc(intelligence.profile.prerequisites[0])}</p></section>
+          <section><span>Disciplinary move</span><p>${esc(intelligence.profile.disciplinary)}</p></section>
+          <section><span>Assessment opportunity</span><p>${esc(intelligence.profile.assessment[0])}</p></section>
+        </div>
         <div class="analysis-section"><h3>Likely barriers</h3><p>Select the barriers that best explain what you observe.</p><div class="barrier-grid">
           ${state.draft.analysis.map((result, index) => {
             const barrier = barrierById(result.id);
             return `<button class="barrier-card ${selected.includes(result.id) ? "is-selected" : ""}" data-action="toggle-barrier" data-id="${result.id}" aria-pressed="${selected.includes(result.id)}"><span class="barrier-icon">${icon(index % 2 ? "knowledge" : "brain")}</span><span><h4>${esc(barrier.name)}</h4><p>${esc(result.reason || barrier.hint)}</p></span><span class="confidence">${index < 2 ? "Strong fit" : "Possible"}</span></button>`;
           }).join("")}
         </div><button class="text-link" data-action="show-all-barriers">+ Review all barrier types</button></div>
-        <div class="analysis-section"><h3>Recommended scaffold engines</h3><p>Each uses a different structure. Choose the one that preserves the most important thinking.</p><div class="engine-recommendations">
-          ${recommended.map((engine, index) => `<button class="engine-card ${state.draft.engineId === engine.id ? "is-selected" : ""}" data-action="choose-engine" data-id="${engine.id}" aria-pressed="${state.draft.engineId === engine.id}">${index === 0 ? '<span class="best-fit">Best fit</span>' : ""}<span class="engine-number">${String(index + 1).padStart(2, "0")}</span><h4>${esc(engine.name)}</h4><p>${esc(engine.tagline)}</p></button>`).join("")}
+        ${representation ? `<div class="representation-advice"><div><span class="eyebrow">Representation recommendation</span><h3>${esc(representation.name)}</h3><p>Use it ${esc(representation.use)}. Avoid it ${esc(representation.avoid)}.</p></div><span class="advice-mark">${icon("eye")}</span></div>` : ""}
+        <div class="analysis-section"><h3>Recommended scaffold engines</h3><p>Each recommendation is based on the subject thinking, the likely barrier and the lesson phase.</p><div class="engine-recommendations">
+          ${recommended.map((engine, index) => `<button class="engine-card engine-card-rich ${state.draft.engineId === engine.id ? "is-selected" : ""}" data-action="choose-engine" data-id="${engine.id}" aria-pressed="${state.draft.engineId === engine.id}">${index === 0 ? '<span class="best-fit">Best fit</span>' : ""}<span class="engine-number">${String(index + 1).padStart(2, "0")}</span><span class="family-label">${esc(familyById(engine.family).name)}</span><h4>${esc(engine.name)}</h4><p>${esc(engine.tagline)}</p><small><strong>Why here:</strong> ${esc(recommendationReason(engine))}</small><small class="preserve-line"><strong>Preserves:</strong> ${esc(engine.preserves)}</small></button>`).join("")}
         </div><button class="text-link" data-action="show-all-engines">Browse all 15 engines</button></div>
       </div>
       ${stepFooter({ nextLabel: "Shape the scaffold" })}`;
@@ -408,24 +479,33 @@
   function renderDesignStep() {
     const engine = engineById(state.draft.engineId);
     const entry = currentEntry();
-    const vocabulary = state.draft.vocabulary || entry?.vocabulary.join(", ") || "";
-    const misconception = state.draft.misconception || entry?.misconceptions[0] || "";
+    const intelligence = curriculumIntelligence();
+    const vocabulary = state.draft.vocabulary || intelligence.vocabulary.slice(0, 6).join(", ") || entry?.vocabulary.join(", ") || "";
+    const misconception = state.draft.misconception || intelligence.misconceptions[0] || "";
     if (!state.draft.title) state.draft.title = `${state.draft.topic}: ${engine.name}`;
     if (!state.draft.vocabulary) state.draft.vocabulary = vocabulary;
     if (!state.draft.misconception) state.draft.misconception = misconception;
+    if (!state.draft.familyId) state.draft.familyId = engine.family;
+    if (!state.draft.representation) state.draft.representation = intelligence.representations[0]?.name || "";
+    const activeStage = DATA.stages.find(stage => stage.id === state.draft.stage) || DATA.stages[1];
+    const nextStage = DATA.stages[DATA.stages.findIndex(stage => stage.id === state.draft.stage) + 1];
     return `${createHead(4, "Shape the support", `${engine.name} · ${engine.tagline}`)}
       <div class="create-card-body">
-        <span class="form-label">Choose the point on the fading pathway</span>
+        <div class="design-identity" style="--subject-colour:${intelligence.subject.colour}"><div><span class="eyebrow">${esc(familyById(engine.family).name)} family</span><h3>${esc(engine.name)}</h3><p>${esc(engine.bestFor)}</p></div><div><span>Protect</span><p>${esc(engine.preserves)}</p></div></div>
+        <span class="form-label">Choose the point on the growth pathway</span>
         <div class="stage-path" role="radiogroup" aria-label="Support stage">
           ${DATA.stages.map(stage => `<button class="stage-option ${stage.id === state.draft.stage ? "is-selected" : ""}" role="radio" aria-checked="${stage.id === state.draft.stage}" data-action="choose-stage" data-id="${stage.id}"><span class="stage-glyph">${stage.glyph}</span><strong>${stage.name}</strong><small>${stage.support}</small></button>`).join("")}
         </div>
+        <div class="fade-explanation"><span>${esc(activeStage.name)} now</span><p>${esc(activeStage.description)}</p><strong>${nextStage ? `Next: ${nextStage.name} removes another layer of external prompting.` : "The page is removed; the pupil keeps one internal self-prompt."}</strong></div>
         <div class="design-fields">
           <div class="form-field"><label for="scaffold-title">Resource title</label><input class="input" id="scaffold-title" data-draft-field="title" value="${esc(state.draft.title)}"></div>
           <div class="form-grid">
             <div class="form-field"><label for="vocabulary">High-leverage vocabulary</label><textarea id="vocabulary" data-draft-field="vocabulary" rows="3">${esc(vocabulary)}</textarea><span class="field-hint">Keep the list small enough to be used.</span></div>
-            <div class="form-field"><label for="misconception">Misconception to expose</label><textarea id="misconception" data-draft-field="misconception" rows="3">${esc(misconception)}</textarea></div>
+            <div class="form-field"><label for="misconception">Misconception to expose</label><textarea id="misconception" data-draft-field="misconception" rows="3">${esc(misconception)}</textarea><span class="field-hint">Expose this through a question or non-example; do not design around it invisibly.</span></div>
           </div>
+          ${intelligence.representations.length ? `<div class="form-field"><label for="representation">Representation choice <small>— recommended for this subject idea</small></label><div class="select-wrap"><select id="representation" data-draft-field="representation"><option value="">No fixed representation</option>${intelligence.representations.map(item => `<option value="${esc(item.name)}" ${item.name === state.draft.representation ? "selected" : ""}>${esc(item.name)} — ${esc(item.use)}</option>`).join("")}</select></div><span class="field-hint">${esc(intelligence.representations.find(item => item.name === state.draft.representation)?.avoid || "Choose only if it reveals the intended relationship.")}</span></div>` : ""}
           <div class="form-field"><label for="intention">Teacher intention</label><textarea id="intention" data-draft-field="intention" rows="3">${esc(state.draft.intention)}</textarea></div>
+          <div class="teacher-question-bank"><span class="form-label">Questions to use before another prompt</span>${intelligence.profile.questions.map(question => `<button class="question-chip" type="button" data-action="copy-question" data-question="${esc(question)}">${esc(question)}</button>`).join("")}</div>
           <div class="form-field"><label for="tags">Library tags <small>— separated by commas</small></label><input class="input" id="tags" data-draft-field="tags" value="${esc(state.draft.tags)}" placeholder="fractions, guided group, explanation"></div>
         </div>
       </div>
@@ -435,24 +515,28 @@
   function renderReviewStep() {
     const scaffold = state.activeScaffold || scaffoldFromDraft();
     const audit = qualityAudit(scaffold);
+    const overall = Math.round(audit.reduce((sum, item) => sum + item.score, 0) / audit.length);
     return `${createHead(5, "Review the finished scaffold", "Check the support, the preserved thinking and the route towards independence before it reaches pupils.")}
       <div class="create-card-body">
+        <div class="review-stage-switch"><div><span class="eyebrow">Move through the growth pathway</span><p>Preview the same learning with a different amount of external support.</p></div><div class="compact-stage-path">${DATA.stages.map(stage => `<button class="${stage.id === scaffold.stage ? "is-active" : ""}" data-action="choose-stage" data-id="${stage.id}"><span>${stage.glyph}</span>${esc(stage.name)}</button>`).join("")}</div></div>
         <div class="preview-workspace">
-          <div class="paper-wrap">${renderResourceDocument(scaffold)}</div>
+          <div class="paper-wrap">${renderResourceDocument({ ...scaffold, stage: state.draft.stage })}</div>
           <aside class="preview-tools">
             <button class="button button-primary" data-action="save-scaffold"><span data-icon="check"></span> Save to library</button>
             <button class="button" data-action="open-print"><span data-icon="print"></span> Open Print Studio</button>
             <button class="button" data-action="ai-prompt"><span data-icon="spark"></span> Enhance with AI</button>
-            <div class="audit-panel"><h3>Quality audit</h3><div class="audit-list">${audit.map(item => `<div class="audit-item"><span class="check">✓</span><span>${esc(item)}</span></div>`).join("")}</div></div>
+            ${scaffold.id && state.library.some(item => item.id === scaffold.id) ? `<button class="button" data-action="record-use-reflection" data-id="${esc(scaffold.id)}"><span data-icon="brain"></span> Reflect after use</button>` : ""}
+            <div class="audit-panel audit-dashboard"><div class="audit-score"><strong>${overall}</strong><span>/ 100</span></div><div><h3>Scaffold quality</h3><p>Eight checks are run against the curriculum decision, barrier and fade.</p></div><button class="text-link" data-action="show-quality-report">Inspect report</button><div class="audit-mini-bars">${audit.map(item => `<span title="${esc(item.label)}: ${item.score}"><i style="width:${item.score}%"></i></span>`).join("")}</div></div>
           </aside>
         </div>
       </div>
       ${stepFooter({ nextLabel: "Edit design", nextAction: "edit-design", extra: '<button class="button button-ghost" data-action="start-again">Start a new scaffold</button>' })}`;
   }
 
-  function analyseBarrier() {
-    const text = `${state.draft.situation} ${state.draft.objective}`.toLowerCase();
-    const entry = currentEntry();
+  function scoreBarrierCandidates(draft = state.draft) {
+    const text = `${draft.situation || ""} ${draft.objective || ""} ${draft.topic || ""}`.toLowerCase();
+    const entry = currentEntry(draft);
+    const intelligence = curriculumIntelligence(draft);
     const scores = new Map(DATA.barriers.map(barrier => [barrier.id, 0]));
     DATA.barriers.forEach(barrier => {
       barrier.keywords.forEach(keyword => {
@@ -460,6 +544,10 @@
       });
     });
     (entry?.barriers || []).forEach((id, index) => scores.set(id, scores.get(id) + 5 - index));
+    intelligence.preferredFamilies.forEach(familyId => {
+      const family = familyById(familyId);
+      family.barriers.forEach((id, index) => scores.set(id, (scores.get(id) || 0) + 2 - Math.min(index, 1)));
+    });
     if (/can|understand|identify/.test(text) && /but|however|struggle|cannot|can't/.test(text)) scores.set("explanation", scores.get("explanation") + 2);
     if (/why|because|justify|evidence|equivalent/.test(text)) scores.set("reasoning", scores.get("reasoning") + 4);
     if (/confus|misconception|same as/.test(text)) scores.set("conceptual", scores.get("conceptual") + 4);
@@ -467,7 +555,21 @@
       scores.set("planning", scores.get("planning") + 3);
       scores.set("self-monitoring", scores.get("self-monitoring") + 2);
     }
-    const ranked = [...scores.entries()].sort((a, b) => b[1] - a[1]).slice(0, 6);
+    if (draft.subject === "science" && /investigat|fair test|variable|enquiry|measure/.test(text)) {
+      scores.set("planning", scores.get("planning") + 3);
+      scores.set("self-monitoring", scores.get("self-monitoring") + 2);
+    }
+    if (draft.subject === "history" && /source|interpret|cause|signific|evidence/.test(text)) scores.set("reasoning", scores.get("reasoning") + 4);
+    if (draft.subject === "geography" && /map|scale|place|pattern|fieldwork/.test(text)) scores.set("representation", scores.get("representation") + 3);
+    if (draft.subject === "computing" && /debug|error|test|state/.test(text)) scores.set("self-monitoring", scores.get("self-monitoring") + 4);
+    if (draft.subject === "english" && /fluency|decode|phrase|read aloud/.test(text)) scores.set("reading", scores.get("reading") + 5);
+    if (draft.subject === "mathematics" && /model|diagram|abstract|see|represent/.test(text)) scores.set("representation", scores.get("representation") + 4);
+    return [...scores.entries()].sort((a, b) => b[1] - a[1]);
+  }
+
+  function analyseBarrier() {
+    const entry = currentEntry();
+    const ranked = scoreBarrierCandidates().slice(0, 6);
     state.draft.analysis = ranked.map(([id], index) => ({
       id,
       reason: index < 3 ? analysisReason(id, entry) : barrierById(id).hint
@@ -479,12 +581,13 @@
 
   function analysisReason(id, entry) {
     const subject = subjectById(state.draft.subject).name;
+    const intelligence = curriculumIntelligence();
     const reasons = {
-      knowledge: `${subject} knowledge needed for this objective may not yet be secure enough to retrieve while working.`,
-      vocabulary: `The language of ${state.draft.topic.toLowerCase()} may be limiting understanding or precise expression.`,
+      knowledge: `${subject} knowledge needed for ${intelligence.profile.name.toLowerCase()} may not yet be secure enough to retrieve while working.`,
+      vocabulary: `The language of ${state.draft.topic.toLowerCase()} may be limiting understanding or precise ${state.draft.subject === "english" ? "authorial" : "subject"} expression.`,
       reading: "Text or instruction demand may be obscuring the intended subject thinking.",
       conceptual: `The description suggests a fragile connection beneath an apparently successful procedure or response.`,
-      representation: "A carefully chosen model may reveal a structure that words alone are not making visible.",
+      representation: intelligence.representations[0] ? `${intelligence.representations[0].name} may reveal the relationship because it is useful ${intelligence.representations[0].use}.` : "A carefully chosen model may reveal a structure that words alone are not making visible.",
       "working-memory": "Pupils may understand each part but lose the thread while coordinating several parts at once.",
       reasoning: "Pupils appear to need a bridge between what they notice, the evidence they use and the conclusion they reach.",
       organisation: "The ideas may be available but not yet grouped or sequenced into a usable structure.",
@@ -502,11 +605,19 @@
   function updateRecommendations() {
     const chosen = state.draft.selectedBarriers;
     const subject = state.draft.subject;
+    const intelligence = curriculumIntelligence();
+    const successfulPractice = state.library.filter(item => item.subject === subject && item.reflection?.worked === "yes");
     state.draft.recommendations = DATA.engines
       .map(engine => {
         const barrierScore = engine.barriers.reduce((total, id) => total + (chosen.includes(id) ? 4 : 0), 0);
         const subjectScore = engine.subjects.includes("all") || engine.subjects.includes(subject) ? 3 : 0;
-        return { id: engine.id, score: barrierScore + subjectScore };
+        const familyScore = intelligence.preferredFamilies.includes(engine.family) ? 3 : 0;
+        const phaseScore = state.draft.phase === "Teacher modelling" && engine.id === "worked-example" ? 3
+          : state.draft.phase === "Before the lesson" && engine.id === "vocabulary-preteach" ? 3
+          : state.draft.phase === "Review and reflection" && engine.id === "metacognition-planner" ? 3
+          : state.draft.phase === "Independent practice" && ["metacognition-planner", "reasoning-ladder"].includes(engine.id) ? 2 : 0;
+        const practiceScore = successfulPractice.some(item => item.engineId === engine.id) ? 1 : 0;
+        return { id: engine.id, score: barrierScore + subjectScore + familyScore + phaseScore + practiceScore };
       })
       .sort((a, b) => b.score - a.score)
       .slice(0, 3)
@@ -514,11 +625,24 @@
     if (state.draft.preferredEngine && !state.draft.recommendations.includes(state.draft.preferredEngine)) state.draft.recommendations[2] = state.draft.preferredEngine;
     if (state.draft.preferredEngine) state.draft.engineId = state.draft.preferredEngine;
     else if (!state.draft.recommendations.includes(state.draft.engineId)) state.draft.engineId = state.draft.recommendations[0];
+    state.draft.familyId = engineById(state.draft.engineId).family;
+    if (!state.draft.representation) state.draft.representation = intelligence.representations[0]?.name || "";
+  }
+
+  function recommendationReason(engine) {
+    const intelligence = curriculumIntelligence();
+    const matchedBarrier = engine.barriers.map(barrierById).find(barrier => state.draft.selectedBarriers.includes(barrier?.id));
+    const subjectFit = engine.subjects.includes(state.draft.subject) || engine.subjects.includes("all");
+    if (engine.family === "representation" && intelligence.representations[0]) return `${intelligence.representations[0].name} is worth considering because it is useful ${intelligence.representations[0].use}.`;
+    if (matchedBarrier) return `Strong fit for ${matchedBarrier.name.toLowerCase()}: ${engine.bestFor}`;
+    if (subjectFit) return `${intelligence.profile.name} benefits from this ${familyById(engine.family).name.toLowerCase()} structure.`;
+    return engine.bestFor;
   }
 
   function scaffoldFromDraft() {
     const entry = currentEntry();
     const engine = engineById(state.draft.engineId);
+    const intelligence = curriculumIntelligence();
     const now = new Date().toISOString();
     const existing = state.draft.editingId ? state.library.find(item => item.id === state.draft.editingId) : null;
     return {
@@ -534,12 +658,22 @@
       situation: state.draft.situation,
       barriers: [...state.draft.selectedBarriers],
       engineId: engine.id,
+      familyId: engine.family,
+      profileId: intelligence.profile.id,
       stage: state.draft.stage,
       title: state.draft.title || `${state.draft.topic}: ${engine.name}`,
       vocabulary: (state.draft.vocabulary || entry?.vocabulary.join(", ") || "").split(",").map(item => item.trim()).filter(Boolean).slice(0, 8),
       misconception: state.draft.misconception || entry?.misconceptions[0] || "",
       intention: state.draft.intention,
-      tags: state.draft.tags.split(",").map(item => item.trim()).filter(Boolean).slice(0, 8)
+      representation: state.draft.representation || intelligence.representations[0]?.name || "",
+      threshold: intelligence.profile.threshold,
+      disciplinaryThinking: intelligence.profile.disciplinary,
+      prerequisites: intelligence.profile.prerequisites.slice(0, 4),
+      smallSteps: intelligence.profile.smallSteps.slice(0, 6),
+      teacherQuestions: intelligence.profile.questions.slice(0, 3),
+      assessmentOpportunities: intelligence.profile.assessment.slice(0, 3),
+      tags: state.draft.tags.split(",").map(item => item.trim()).filter(Boolean).slice(0, 8),
+      reflection: existing?.reflection || null
     };
   }
 
@@ -612,7 +746,14 @@
   }
 
   function renderParagraphPlanner(scaffold) {
-    const labels = scaffold.subject === "english" ? ["Purpose", "Main idea", "Develop", "Shape the ending"] : ["Point", "Evidence", "Explain", "Link"];
+    const subjectStructures = {
+      english: ["Purpose", "Main idea", "Develop as a writer", "Shape the ending"],
+      history: ["Historical claim", "Period knowledge", "Evidence", "Reasoned connection"],
+      geography: ["Located claim", "Evidence at this scale", "Process or pattern", "Wider connection"],
+      science: ["Phenomenon", "Evidence", "Scientific idea", "Mechanism"],
+      computing: ["Goal", "Logical idea", "Trace or example", "Evaluation"]
+    };
+    const labels = subjectStructures[scaffold.subject] || ["Claim", "Relevant knowledge", "Evidence", "Reasoned link"];
     const prompts = scaffold.stage === "seed"
       ? ["What must this paragraph help the reader understand?", "Write the central idea in one precise sentence.", "Add selected evidence, detail or an example. Explain why it matters.", "Return to the purpose without simply repeating."]
       : scaffold.stage === "sprout" ? ["My purpose is…", "The central idea is…", "This is shown by… This matters because…", "Therefore…"]
@@ -633,35 +774,51 @@
   }
 
   function renderWorkedExample(scaffold) {
-    const steps = ["Notice what the task is asking", "Choose the first useful representation or action", "Carry out the method and explain the decision", "Check the result against the original task"];
+    const subjectSteps = {
+      mathematics: ["Identify the mathematical structure", "Choose a representation and explain why it fits", "Carry out the strategy while linking each move to the structure", "Check with estimation, inverse or a different representation"],
+      computing: ["Define the intended outcome", "Trace the planned logic and changing state", "Implement or correct one deliberate step", "Test with a case chosen to reveal an error"],
+      english: ["Notice the writer or reader decision", "Explain what the choice achieves", "Apply the same principle in a new context", "Reread and evaluate the effect"]
+    };
+    const steps = subjectSteps[scaffold.subject] || ["Notice what the task is asking", "Choose the first useful representation or action", "Carry out the method and explain the decision", "Check the result against the original task"];
     const hideFrom = { seed: 4, sprout: 2, growth: 1, independent: 0 }[scaffold.stage];
     return `<h2>Study the decisions, then complete the thinking</h2><div class="worked-example"><section class="worked-column"><h3>Worked thinking</h3>${steps.map((step, index) => `<div class="worked-step"><span>${index + 1}</span><span class="${index >= hideFrom ? "" : "answer-content"}">${index < hideFrom ? esc(step) : "What would you do here—and why?"}</span></div>`).join("")}</section><section class="worked-column"><h3>Your parallel example</h3>${steps.map((step, index) => `<div class="worked-step"><span>${index + 1}</span><span>${supportText(scaffold, index === 0 ? "Identify the task." : "Follow the same kind of decision—not the same answer.", index < 2 ? "Use the model, then make your own choice." : "Explain your choice.", index === 0 ? "What matters first?" : "", "Plan, solve and check independently.")}</span></div>`).join("")}</section></div><h2>What should fade next?</h2><p>Circle the modelled step you no longer need to see.</p>`;
   }
 
   function renderRepresentationSelector(scaffold) {
-    const representations = scaffold.subject === "mathematics" ? ["Concrete or diagram", "Number line or bar", "Symbols and notation"] : ["Labelled diagram", "Process model", "Words or data"];
-    return `<h2>Which representation reveals the structure?</h2><div class="representation-grid">${representations.map((name, index) => `<section class="representation-card"><h3>${index + 1}. ${esc(name)}</h3><div class="representation-space"></div><p><strong>It shows…</strong></p><p><strong>It hides…</strong></p></section>`).join("")}</div><h2>Make a reasoned choice</h2><p>${supportText(scaffold, "The most useful representation is ___ because it makes ___ visible.", "I would choose ___ because…", "Which representation exposes the important relationship?", "Choose, use and evaluate a representation independently.")}</p>${blankLines(3)}`;
+    const intelligence = curriculumIntelligence(scaffold);
+    const preferred = scaffold.representation ? intelligence.representations.find(item => item.name === scaffold.representation) : null;
+    const representations = [...(preferred ? [preferred] : []), ...intelligence.representations.filter(item => item !== preferred)].slice(0, 3);
+    while (representations.length < 3) representations.push({ name: ["Words and notation", "A second model", "No external model"][representations.length], use: "when it exposes the intended relationship", avoid: "when it adds visual load without insight" });
+    return `<h2>Which representation reveals the subject relationship?</h2><div class="representation-grid">${representations.map((item, index) => `<section class="representation-card ${index === 0 && preferred ? "is-recommended" : ""}"><h3>${index + 1}. ${esc(item.name)}</h3><small>${esc(item.use)}</small><div class="representation-space"></div><p><strong>It makes visible…</strong></p><p><strong>It may conceal…</strong></p></section>`).join("")}</div><h2>Make a reasoned choice</h2><p>${supportText(scaffold, "The most useful representation is ___ because it makes ___ visible. I rejected ___ because…", "I would choose ___ because…", "Which representation exposes the important relationship?", "Choose, use and evaluate a representation independently.")}</p>${blankLines(3)}`;
   }
 
   function renderReasoningLadder(scaffold) {
-    const steps = [
-      ["Notice", "What do you see, know or calculate?"],
-      ["Connect", "Which detail, rule or relationship matters?"],
-      ["Explain", "How does that connection support your idea?"],
-      ["Justify", "Why should someone accept this conclusion?"],
-      ["Test", "Does it always work? What might challenge it?"]
-    ];
+    const subjectSteps = {
+      english: [["Notice", "Which exact word, sentence or pattern matters?"], ["Connect", "What does the reader know that makes it meaningful?"], ["Interpret", "What idea or impression does that support?"], ["Justify", "Why is this evidence strong enough?"], ["Test", "What other reading is possible—and why is yours stronger?"]],
+      mathematics: [["Notice structure", "What stays the same and what changes?"], ["Represent", "Which model exposes the relationship?"], ["Generalise", "What mathematical statement may be true?"], ["Justify", "Why must it work, not only in this example?"], ["Test", "Use a boundary case or counterexample."]],
+      science: [["Observe", "What exactly was seen or measured?"], ["Select evidence", "Which result is relevant to the question?"], ["Use science", "Which scientific idea or model applies?"], ["Explain mechanism", "How does the idea account for the evidence?"], ["Limit", "What can the evidence not yet show?"]],
+      history: [["Claim", "What historical claim are you considering?"], ["Use knowledge", "Which period knowledge makes the evidence meaningful?"], ["Select evidence", "What can this source or example reveal?"], ["Reason", "How does it support the claim?"], ["Test", "What other interpretation or factor must be considered?"]],
+      geography: [["Locate", "Where is the pattern or process?"], ["Describe pattern", "What is distributed, connected or changing?"], ["Explain process", "Which human or physical process accounts for it?"], ["Connect", "How do place and scale shape the explanation?"], ["Scale test", "Would this claim still hold at another scale?"]],
+      computing: [["Goal", "What should the system or algorithm do?"], ["Trace", "What instruction runs next?"], ["State", "What changes, and what remains stored?"], ["Explain", "Why does that produce the output?"], ["Test", "Which input is most likely to reveal a flaw?"]]
+    };
+    const steps = subjectSteps[scaffold.subject] || [["Notice", "What do you see, know or calculate?"], ["Connect", "Which detail, rule or relationship matters?"], ["Explain", "How does that connection support your idea?"], ["Justify", "Why should someone accept this conclusion?"], ["Test", "What might challenge it?"]];
     const visible = { seed: 5, sprout: 4, growth: 2, independent: 1 }[scaffold.stage];
     return `<h2>Move from noticing to a defensible conclusion</h2><div class="reasoning-steps">${steps.map(([label, prompt], index) => `<section class="reasoning-step"><div><strong>${esc(label)}</strong><span>${index < visible ? esc(prompt) : "Use your own next reasoning move."}</span>${blankLines(index < 2 ? 1 : 2)}</div></section>`).join("")}</div>`;
   }
 
   function renderObservationRecorder(scaffold) {
-    const cells = [["I see / measure", "Record only what can be observed or measured."], ["I notice a change", "Compare carefully with the start or another case."], ["I wonder", "Ask a question that could guide further observation."], ["I think this means", "Interpret the pattern. Link the claim to evidence."]];
+    const cells = scaffold.subject === "geography"
+      ? [["Located observation", "Record what is present and exactly where."], ["Spatial pattern", "Describe distribution, connection or change without explaining yet."], ["Fieldwork limitation", "What might time, site or sampling have missed?"], ["Geographical meaning", "Connect the pattern to a human or physical process."]]
+      : [["I see / measure", "Record only what can be observed or measured."], ["I notice a change", "Compare carefully with the start or another case."], ["I wonder", "Ask a question that could guide further observation."], ["I think this means", "Interpret the pattern. Link the claim to evidence."]];
     return `<h2>Observe before you explain</h2><div class="observation-grid">${cells.map(([title, prompt], index) => `<section class="observation-cell"><h3>${esc(title)}</h3><p>${scaffold.stage === "independent" && index < 3 ? "" : esc(prompt)}</p>${blankLines(4)}</section>`).join("")}</div><h2>Keep evidence and interpretation distinct</h2><p>Underline one observation. Draw an arrow to the idea it supports.</p>`;
   }
 
   function renderEvidenceBuilder(scaffold) {
-    return `<h2>Build a chain that holds</h2><div class="evidence-chain"><section class="chain-card"><h3>Claim</h3><p>${supportText(scaffold, "My answer or interpretation is…", "I think…", "State a precise claim.", "")}</p>${blankLines(5)}</section><div class="chain-link">→</div><section class="chain-card"><h3>Evidence</h3><p>${supportText(scaffold, "The exact detail, result or source feature is…", "This is shown by…", "Choose the strongest evidence.", "")}</p>${blankLines(5)}</section><div class="chain-link">→</div><section class="chain-card"><h3>Reasoning</h3><p>${supportText(scaffold, "This evidence supports the claim because…", "This matters because…", "Make the connection explicit.", "")}</p>${blankLines(5)}</section></div><h2>Stress-test the chain</h2><p>Where is the weakest link? Strengthen it without adding irrelevant information.</p>${blankLines(2)}`;
+    const labels = scaffold.subject === "science" ? ["Scientific claim", "Observation or result", "Scientific mechanism"]
+      : scaffold.subject === "history" ? ["Historical claim", "Source plus period knowledge", "Historical inference"]
+      : scaffold.subject === "geography" ? ["Located claim", "Map, fieldwork or case evidence", "Process and scale"]
+      : scaffold.subject === "english" ? ["Interpretation", "Precise textual evidence", "Reader's reasoning"] : ["Claim", "Evidence", "Reasoning"];
+    return `<h2>Build a subject chain that holds</h2><div class="evidence-chain"><section class="chain-card"><h3>${esc(labels[0])}</h3><p>${supportText(scaffold, "My answer or interpretation is…", "I think…", "State a precise claim.", "")}</p>${blankLines(5)}</section><div class="chain-link">→</div><section class="chain-card"><h3>${esc(labels[1])}</h3><p>${supportText(scaffold, "The exact detail, result or source feature is…", "This is shown by…", "Choose the strongest evidence.", "")}</p>${blankLines(5)}</section><div class="chain-link">→</div><section class="chain-card"><h3>${esc(labels[2])}</h3><p>${supportText(scaffold, "This evidence supports the claim because…", "This matters because…", "Make the connection explicit.", "")}</p>${blankLines(5)}</section></div><h2>Stress-test the chain</h2><p>Where is the weakest link? Strengthen it without adding irrelevant information.</p>${blankLines(2)}`;
   }
 
   function renderChronologyBuilder(scaffold) {
@@ -693,15 +850,23 @@
   }
 
   function qualityAudit(scaffold) {
-    const checks = [];
-    if (scaffold.situation.length >= 20) checks.push("Begins from an observed pupil barrier, not a generic activity.");
-    else checks.push("Targets a stated learning barrier within the selected curriculum context.");
-    checks.push(`${engineById(scaffold.engineId).name} matches ${scaffold.barriers.map(id => barrierById(id)?.name.toLowerCase()).filter(Boolean).slice(0, 2).join(" and ") || "the identified need"}.`);
-    checks.push("Leaves the central subject decision and explanation with the pupil.");
-    checks.push(`${titleCase(scaffold.stage)} support has a visible next step towards independence.`);
-    checks.push(`Vocabulary is limited to ${scaffold.vocabulary.length || "a small number of"} high-leverage terms.`);
-    checks.push("Print structure is legible, calm and photocopy-safe.");
-    return checks;
+    const entry = subjectById(scaffold.subject).entries.find(item => item.title === scaffold.topic && item.years.includes(scaffold.year));
+    const engine = engineById(scaffold.engineId);
+    const barriers = (scaffold.barriers || []).map(barrierById).filter(Boolean);
+    const vocabularyCount = (scaffold.vocabulary || []).length;
+    const hasPreciseObservation = (scaffold.situation || "").length >= 45 && /but|however|when|although|yet/i.test(scaffold.situation || "");
+    const aligned = entry?.objectives?.includes(scaffold.objective);
+    const stageIndex = DATA.stages.findIndex(stage => stage.id === scaffold.stage);
+    return [
+      { label: "Curriculum alignment", score: aligned ? 98 : entry ? 92 : 86, evidence: aligned ? "The objective is drawn directly from the selected England curriculum context." : "The editable objective remains anchored to the selected subject profile and disciplinary demand." },
+      { label: "Barrier precision", score: hasPreciseObservation ? 96 : (scaffold.situation || "").length >= 20 ? 88 : 76, evidence: hasPreciseObservation ? "The observation distinguishes current success from the point of breakdown." : "Add a clearer ‘can do / breaks down when’ distinction to sharpen the support." },
+      { label: "Challenge preserved", score: engine.preserves ? 96 : 89, evidence: engine.preserves || "The central subject decision remains with the pupil." },
+      { label: "Independence promoted", score: stageIndex >= 0 ? 94 : 82, evidence: `${titleCase(scaffold.stage)} has a defined next reduction and an independent end point.` },
+      { label: "Visual clarity", score: scaffold.representation ? 95 : 90, evidence: scaffold.representation ? `${scaffold.representation} is named as a purposeful representation choice.` : `${engine.name} uses a distinctive, consistent structure rather than a generic worksheet grid.` },
+      { label: "Cognitive load", score: vocabularyCount <= 6 ? 96 : vocabularyCount <= 8 ? 88 : 78, evidence: `${vocabularyCount || "A small set of"} high-leverage word${vocabularyCount === 1 ? " is" : "s are"} foregrounded; incidental directions remain short.` },
+      { label: "Print quality", score: 95, evidence: "The structure has fixed page geometry, greyscale support, large-print handling and photocopy-safe borders." },
+      { label: "Fade potential", score: barriers.length && stageIndex >= 0 ? 97 : 85, evidence: stageIndex < DATA.stages.length - 1 ? `The next version removes support towards ${DATA.stages[stageIndex + 1]?.name || "independence"} without changing the objective.` : "The external scaffold is removed and one pupil-owned self-prompt remains." }
+    ];
   }
 
   function renderLibrary() {
@@ -715,8 +880,8 @@
     const cards = filtered.map(item => `
       <article class="library-card">
         <div class="library-thumb"><div class="mini-paper"></div><button class="favourite-button ${item.favourite ? "is-active" : ""}" data-action="toggle-favourite" data-id="${esc(item.id)}" aria-label="${item.favourite ? "Remove from" : "Add to"} favourites" aria-pressed="${item.favourite}">${icon("heart")}</button></div>
-        <div class="library-card-body"><h3 title="${esc(item.title)}">${esc(item.title)}</h3><p>${esc(item.year)} · ${esc(subjectById(item.subject).name)} · ${esc(engineById(item.engineId).name)}</p><div class="tag-row"><span class="tag">${esc(titleCase(item.stage))}</span>${(item.tags || []).slice(0, 3).map(tag => `<span class="tag">${esc(tag)}</span>`).join("")}</div>
-          <div class="card-actions"><button class="button" data-action="open-scaffold" data-id="${esc(item.id)}"><span data-icon="eye"></span> Open</button><button class="icon-button" data-action="duplicate-scaffold" data-id="${esc(item.id)}" aria-label="Duplicate ${esc(item.title)}">${icon("copy")}</button><button class="icon-button" data-action="delete-scaffold" data-id="${esc(item.id)}" aria-label="Delete ${esc(item.title)}">${icon("trash")}</button></div>
+        <div class="library-card-body"><h3 title="${esc(item.title)}">${esc(item.title)}</h3><p>${esc(item.year)} · ${esc(subjectById(item.subject).name)} · ${esc(engineById(item.engineId).name)}</p><div class="tag-row"><span class="tag">${esc(titleCase(item.stage))}</span>${item.reflection ? '<span class="tag tag-reflected">Reflected</span>' : ""}${(item.tags || []).slice(0, 2).map(tag => `<span class="tag">${esc(tag)}</span>`).join("")}</div>
+          <div class="card-actions"><button class="button" data-action="open-scaffold" data-id="${esc(item.id)}"><span data-icon="eye"></span> Open</button><button class="icon-button" data-action="record-use-reflection" data-id="${esc(item.id)}" aria-label="Reflect after using ${esc(item.title)}">${icon("brain")}</button><button class="icon-button" data-action="duplicate-scaffold" data-id="${esc(item.id)}" aria-label="Duplicate ${esc(item.title)}">${icon("copy")}</button><button class="icon-button" data-action="delete-scaffold" data-id="${esc(item.id)}" aria-label="Delete ${esc(item.title)}">${icon("trash")}</button></div>
         </div>
       </article>`).join("");
     return `
@@ -732,22 +897,46 @@
 
   function renderKnowledge() {
     const subject = subjectById(state.knowledgeSubject);
-    const commonBarriers = [...new Set(subject.entries.flatMap(entry => entry.barriers))].map(barrierById).filter(Boolean);
-    const yearCoverage = DATA.years.map(year => ({ year, entries: subject.entries.filter(entry => entry.years.includes(year)) })).filter(group => group.entries.length);
+    const brain = brainBySubject(subject.id);
+    if (!brain.profiles.some(profile => profile.id === state.knowledgeProfile)) state.knowledgeProfile = brain.profiles[0].id;
+    const profile = brain.profiles.find(item => item.id === state.knowledgeProfile) || brain.profiles[0];
+    const lensLabels = { ideas: "Subject architecture", progression: "Small steps", misconceptions: "Misconceptions", toolkit: "Teacher toolkit" };
     return `
-      <div class="page-heading"><div><span class="eyebrow">Built for England</span><h2>Professional knowledge</h2><p>A transparent foundation for curriculum-aware decisions. This is not a resource bank: it explains what each support is trying to protect.</p></div></div>
+      <div class="page-heading"><div><span class="eyebrow">Built for England · Build 2 curriculum brain</span><h2>Knowledge Studio</h2><p>Browse the subject thinking used inside every recommendation: big ideas, progression, misconceptions, representations and teacher decisions.</p></div></div>
       <div class="knowledge-layout">
-        <div class="subject-tabs" role="tablist" aria-label="Subjects">${DATA.subjects.map(item => `<button class="subject-tab ${item.id === subject.id ? "is-active" : ""}" style="--subject-colour:${item.colour}" role="tab" aria-selected="${item.id === subject.id}" data-action="knowledge-subject" data-id="${item.id}">${esc(item.name)}</button>`).join("")}</div>
+        <div class="knowledge-nav"><div class="subject-tabs" role="tablist" aria-label="Subjects">${DATA.subjects.map(item => `<button class="subject-tab ${item.id === subject.id ? "is-active" : ""}" style="--subject-colour:${item.colour}" role="tab" aria-selected="${item.id === subject.id}" data-action="knowledge-subject" data-id="${item.id}">${esc(item.name)}</button>`).join("")}</div><div class="profile-list"><span class="eyebrow">Subject lenses</span>${brain.profiles.map(item => `<button class="profile-button ${item.id === profile.id ? "is-active" : ""}" data-action="knowledge-profile" data-id="${item.id}"><span></span>${esc(item.name)}</button>`).join("")}</div></div>
         <section class="knowledge-content" style="--subject-colour:${subject.colour}">
-          <div class="knowledge-hero"><span class="eyebrow">Subject lens</span><h3>${esc(subject.name)}</h3><p>${esc(subject.summary)}</p></div>
-          <div class="knowledge-sections">
-            <article class="knowledge-card"><h4>What strong scaffolding protects</h4><p>Subject-specific principles used by the recommendation and quality systems.</p><div class="knowledge-pills">${subject.principles.map(principle => `<span class="knowledge-pill">${esc(principle)}</span>`).join("")}</div></article>
-            <article class="knowledge-card"><h4>Curriculum architecture</h4><p>Representative curriculum contexts establish the Build 1 structure. Later builds can deepen these without replacing the application.</p>${yearCoverage.map(group => `<div style="margin-top:10px"><span class="eyebrow">${esc(group.year)}</span><div class="knowledge-pills">${group.entries.map(entry => `<span class="knowledge-pill" title="${esc(entry.objectives.join(" · "))}">${esc(entry.title)}</span>`).join("")}</div></div>`).join("")}</article>
-            <article class="knowledge-card"><h4>Barriers commonly worth investigating</h4><p>These are hypotheses about the task–pupil relationship, never fixed labels for a child.</p><div class="knowledge-pills">${commonBarriers.map(barrier => `<span class="knowledge-pill" title="${esc(barrier.hint)}">${esc(barrier.name)}</span>`).join("")}</div></article>
-            <article class="knowledge-card"><h4>The fading pathway</h4><p>Every engine can carry a pupil from explicit support towards self-prompted independence.</p><div class="knowledge-pills">${DATA.stages.map(stage => `<span class="knowledge-pill"><strong>${stage.glyph} ${esc(stage.name)}</strong> · ${esc(stage.support)}</span>`).join("")}</div></article>
-          </div>
+          <div class="knowledge-hero"><span class="eyebrow">${esc(subject.name)} · subject identity</span><h3>${esc(profile.name)}</h3><p>${esc(profile.disciplinary)}</p><div class="knowledge-hero-meta"><span>${brain.profiles.length} subject lenses</span><span>${subject.entries.length} curriculum contexts</span><span>${brain.knowledgeTypes.length} knowledge types</span></div></div>
+          <div class="knowledge-lenses" role="tablist" aria-label="Knowledge lens">${Object.entries(lensLabels).map(([id, label]) => `<button class="${state.knowledgeLens === id ? "is-active" : ""}" data-action="knowledge-lens" data-id="${id}" role="tab" aria-selected="${state.knowledgeLens === id}">${esc(label)}</button>`).join("")}</div>
+          <div class="knowledge-sections knowledge-studio-sections">${renderKnowledgeLens(subject, brain, profile)}</div>
         </section>
       </div>`;
+  }
+
+  function renderKnowledgeLens(subject, brain, profile) {
+    if (state.knowledgeLens === "progression") {
+      return `<article class="knowledge-card knowledge-feature"><span class="eyebrow">Threshold concept</span><h4>${esc(profile.threshold)}</h4><p>This is the relationship a scaffold must reveal without explaining away.</p></article>
+        <article class="knowledge-card"><h4>Prerequisite knowledge</h4><p>Check these before adding more task structure.</p><ol class="knowledge-sequence">${profile.prerequisites.map(item => `<li>${esc(item)}</li>`).join("")}</ol></article>
+        <article class="knowledge-card"><h4>Intelligent small steps</h4><p>A likely conceptual sequence—not a compulsory lesson script.</p><ol class="knowledge-sequence numbered">${profile.smallSteps.map(item => `<li>${esc(item)}</li>`).join("")}</ol></article>
+        <article class="knowledge-card"><h4>Progression across primary</h4><p>How the wider subject demand grows.</p><ol class="knowledge-sequence numbered">${brain.progression.map(item => `<li>${esc(item)}</li>`).join("")}</ol></article>`;
+    }
+    if (state.knowledgeLens === "misconceptions") {
+      return `<article class="knowledge-card knowledge-feature"><span class="eyebrow">Misconception principle</span><h4>Expose the idea; do not quietly design around it.</h4><p>A scaffold should make the pupil's current model discussable while leaving the repair work intellectually active.</p></article>
+        ${profile.misconceptions.map((item, index) => `<article class="knowledge-card misconception-card"><span class="misconception-number">${String(index + 1).padStart(2, "0")}</span><h4>${esc(item)}</h4><p>${esc(profile.assessment[index % profile.assessment.length])}</p></article>`).join("")}
+        <article class="knowledge-card"><h4>Teacher questions</h4><p>Use these before adding another written prompt.</p><div class="question-stack">${profile.questions.map(item => `<button data-action="copy-question" data-question="${esc(item)}">“${esc(item)}”<small>Copy</small></button>`).join("")}</div></article>`;
+    }
+    if (state.knowledgeLens === "toolkit") {
+      const families = profile.families.map(familyById).filter(Boolean);
+      return `<article class="knowledge-card"><h4>Representation guidance</h4><p>Representations are recommended for a reason, never as a subject decoration.</p><div class="representation-list">${profile.representations.map(item => `<section><div><strong>${esc(item.name)}</strong><p>Use ${esc(item.use)}.</p></div><small>Avoid ${esc(item.avoid)}.</small></section>`).join("")}</div></article>
+        <article class="knowledge-card"><h4>Useful scaffold families</h4><p>Families organise the purpose of support before a printable engine is chosen.</p><div class="family-grid">${families.map(family => `<section><strong>${esc(family.name)}</strong><p>${esc(family.purpose)}</p></section>`).join("")}</div></article>
+        <article class="knowledge-card"><h4>Assessment opportunities</h4><p>Small checks that reveal understanding before more support is added.</p><ul class="knowledge-list">${profile.assessment.map(item => `<li>${esc(item)}</li>`).join("")}</ul></article>
+        <article class="knowledge-card"><h4>Teacher reminders</h4><p>Decisions used quietly throughout the recommendation engine.</p><ul class="knowledge-list">${brain.teacherReminders.map(item => `<li>${esc(item)}</li>`).join("")}</ul></article>`;
+    }
+    return `<article class="knowledge-card knowledge-feature"><span class="eyebrow">Subject identity</span><h4>${esc(brain.identity)}</h4><p>${esc(subject.summary)}</p></article>
+      <article class="knowledge-card"><h4>Big ideas</h4><p>Ideas that connect individual curriculum statements into a coherent subject.</p><ul class="knowledge-list">${brain.bigIdeas.map(item => `<li>${esc(item)}</li>`).join("")}</ul></article>
+      <article class="knowledge-card"><h4>Knowledge types</h4><p>What pupils may need to know and coordinate here.</p><div class="knowledge-pills">${brain.knowledgeTypes.map(item => `<span class="knowledge-pill">${esc(item)}</span>`).join("")}</div></article>
+      <article class="knowledge-card"><h4>High-leverage vocabulary</h4><p>Teach form, meaning, connection and use—not a detached glossary.</p><div class="knowledge-pills">${profile.vocabulary.map(item => `<span class="knowledge-pill word-pill">${esc(item)}</span>`).join("")}</div></article>
+      <article class="knowledge-card"><h4>What strong scaffolding protects</h4><p>These principles are used by the recommendation and quality systems.</p><div class="knowledge-pills">${subject.principles.map(item => `<span class="knowledge-pill">${esc(item)}</span>`).join("")}</div></article>`;
   }
 
   function activeForPrint() {
@@ -763,24 +952,93 @@
     return html.replace('class="paper"', `class="paper ${classes}"`);
   }
 
+  function printPromptSet(scaffold) {
+    const intelligence = curriculumIntelligence(scaffold);
+    const stage = DATA.stages.find(item => item.id === scaffold.stage) || DATA.stages[1];
+    const sourceSteps = scaffold.smallSteps?.length ? scaffold.smallSteps : intelligence.profile.smallSteps;
+    const visibleCount = { seed: 6, sprout: 4, growth: 2, independent: 1 }[scaffold.stage] || 4;
+    const steps = sourceSteps.slice(0, visibleCount);
+    const questions = scaffold.teacherQuestions?.length ? scaffold.teacherQuestions : intelligence.profile.questions;
+    return {
+      intelligence,
+      stage,
+      steps,
+      questions,
+      selfPrompt: questions[0] || "What matters here, and how will I check it?",
+      misconception: scaffold.misconception || intelligence.misconceptions[0],
+      vocabulary: (scaffold.vocabulary || intelligence.vocabulary).slice(0, 6)
+    };
+  }
+
+  function formatPage(scaffold, format, body, className = "") {
+    const subject = subjectById(scaffold.subject);
+    const stage = DATA.stages.find(item => item.id === scaffold.stage) || DATA.stages[1];
+    return `<article class="paper format-page format-${format.id} ${className}" data-page="resource"><div class="paper-brand">Scaffold Seeds · ${esc(format.name)}</div><div class="resource-meta"><span>${esc(scaffold.year)}</span><span>${esc(subject.name)}</span><span>${esc(stage.name)} · ${esc(stage.support)}</span></div>${body}<footer class="resource-footer"><span>${esc(scaffold.topic)}</span><span>Designed to fade</span></footer></article>`;
+  }
+
+  function renderFormatDocument(scaffold) {
+    const format = printFormatById();
+    if (format.id === "workpage") return renderResourceDocument(scaffold);
+    const prompts = printPromptSet(scaffold);
+    const title = `<div class="format-title"><span class="eyebrow">${esc(engineById(scaffold.engineId).name)}</span><h1>${esc(scaffold.title)}</h1><p>${esc(scaffold.objective)}</p></div>`;
+    const cards = prompts.steps.length ? prompts.steps : [prompts.selfPrompt];
+    if (format.id === "laminated-card") {
+      return formatPage(scaffold, format, `${title}<div class="laminated-grid"><section><span class="card-seed">1 · Enter the thinking</span><h2>${esc(cards[0])}</h2><p>${esc(cards[1] || prompts.selfPrompt)}</p><div class="wipe-space"></div></section><section><span class="card-seed">2 · Check and release</span><h2>${esc(prompts.selfPrompt)}</h2><p><strong>Watch for:</strong> ${esc(prompts.misconception)}</p><div class="vocabulary-line">${prompts.vocabulary.map(word => `<span>${esc(word)}</span>`).join("")}</div></section></div>`);
+    }
+    if (format.id === "desk-strip") {
+      const stripPrompts = [...cards, prompts.selfPrompt, "Cover this strip when you can prompt yourself."].slice(0, 4);
+      return formatPage(scaffold, format, `${title}<div class="desk-strips">${stripPrompts.map((item, index) => `<section><span>${index + 1}</span><strong>${esc(item)}</strong><small>${index === stripPrompts.length - 1 ? "My own self-prompt: ____________________" : esc(prompts.vocabulary[index] || scaffold.topic)}</small></section>`).join("")}</div><p class="cut-note">Cut on the dotted lines · place one strip beside the task · remove as soon as it is no longer needed</p>`);
+    }
+    if (format.id === "table-card") {
+      const tablePrompts = [...cards, ...prompts.questions].slice(0, 4);
+      return formatPage(scaffold, format, `${title}<div class="print-card-grid table-cards">${tablePrompts.map((item, index) => `<section><span class="card-seed">Card ${index + 1}</span><h2>${esc(item)}</h2><p>${index % 2 ? "Ask for evidence, then listen without rescuing." : "Pause. Each person offers one precise idea."}</p><div class="wipe-space small"></div></section>`).join("")}</div>`);
+    }
+    if (format.id === "mini-card") {
+      const miniPrompts = [...cards, ...prompts.questions, "What can I now do without this card?"].slice(0, 6);
+      return formatPage(scaffold, format, `${title}<div class="print-card-grid mini-cards">${miniPrompts.map((item, index) => `<section><span>${String(index + 1).padStart(2, "0")}</span><strong>${esc(item)}</strong><small>${esc(prompts.vocabulary[index % Math.max(prompts.vocabulary.length, 1)] || scaffold.topic)}</small></section>`).join("")}</div>`);
+    }
+    if (format.id === "teacher-card") {
+      const teacherPrompts = [...prompts.questions, `Listen for: ${prompts.misconception}`, "Which prompt can I remove now?"].slice(0, 4);
+      return formatPage(scaffold, format, `${title}<div class="print-card-grid teacher-cards">${teacherPrompts.map((item, index) => `<section><span class="card-seed">Teacher move ${index + 1}</span><h2>${esc(item)}</h2><p>${index < 2 ? "Wait after asking. Use the pupil response to decide whether support is needed." : "Return the next subject decision to the pupil."}</p></section>`).join("")}</div>`);
+    }
+    if (format.id === "discussion-card") {
+      const discussion = [["A · Build", prompts.questions[0]], ["B · Probe", "What evidence or relationship makes that idea work?"], ["A · Refine", prompts.questions[1] || "What would make the explanation more precise?"], ["Together · Conclude", prompts.selfPrompt]];
+      return formatPage(scaffold, format, `${title}<div class="print-card-grid discussion-cards">${discussion.map(([role, item]) => `<section><span class="card-seed">${esc(role)}</span><h2>${esc(item)}</h2><p>Listen · paraphrase · add or challenge with a reason.</p></section>`).join("")}</div>`);
+    }
+    if (format.id === "group-sheet") {
+      return formatPage(scaffold, format, `${title}<div class="group-workspace"><section class="group-roles"><h2>Roles that protect the thinking</h2><div><span>Noticer</span><span>Connector</span><span>Challenger</span><span>Checker</span></div></section><section class="group-focus"><h2>Shared focus</h2><p>${esc(cards[0])}</p><div class="wipe-space"></div></section><section class="group-conclusion"><h2>Our reasoned conclusion</h2><p>${esc(prompts.selfPrompt)}</p>${blankLines(5)}</section></div>`);
+    }
+    if (format.id === "display-poster") {
+      return formatPage(scaffold, format, `<div class="poster-layout"><span class="eyebrow">${esc(subjectById(scaffold.subject).name)} thinking</span><h1>${esc(scaffold.title)}</h1><p class="poster-question">${esc(prompts.selfPrompt)}</p><div class="poster-steps">${cards.slice(0, 4).map((item, index) => `<section><span>${index + 1}</span><strong>${esc(item)}</strong></section>`).join("")}</div><div class="poster-release">When you can prompt yourself, let the scaffold go.</div></div>`);
+    }
+    if (format.id === "foldable") {
+      const panels = [["Open", cards[0]], ["Connect", cards[1] || prompts.questions[0]], ["Check", prompts.selfPrompt], ["Fold away", "Name the one prompt you will keep in your head."]];
+      return formatPage(scaffold, format, `${title}<div class="foldable-panels">${panels.map(([label, item], index) => `<section><span class="card-seed">${index + 1} · ${esc(label)}</span><h2>${esc(item)}</h2><div class="fold-write"></div></section>`).join("")}</div><p class="cut-note">Cut around the outer edge · fold on the dotted vertical lines</p>`);
+    }
+    return renderResourceDocument(scaffold);
+  }
+
   function renderTeacherGuide(scaffold) {
     const stage = DATA.stages.find(item => item.id === scaffold.stage);
     const nextStageIndex = DATA.stages.findIndex(item => item.id === scaffold.stage) + 1;
     const nextStage = DATA.stages[nextStageIndex];
     const barriers = scaffold.barriers.map(barrierById).filter(Boolean);
+    const intelligence = curriculumIntelligence(scaffold);
+    const questions = scaffold.teacherQuestions?.length ? scaffold.teacherQuestions : intelligence.profile.questions;
+    const assessments = scaffold.assessmentOpportunities?.length ? scaffold.assessmentOpportunities : intelligence.profile.assessment;
     return `<article class="paper teacher-page ${paperClasses()}" data-page="teacher"><div class="paper-brand">Scaffold Seeds · Teacher guidance</div><div class="resource-meta"><span>${esc(scaffold.year)}</span><span>${esc(subjectById(scaffold.subject).name)}</span><span>${esc(engineById(scaffold.engineId).name)}</span></div><h1>Using this scaffold well</h1><p class="resource-objective"><strong>${esc(scaffold.title)}</strong> · ${esc(scaffold.objective)}</p><div class="teacher-guide-grid">
       <section class="guide-block"><h3>Observed barrier</h3><p>${esc(scaffold.situation)}</p><ul>${barriers.map(barrier => `<li><strong>${esc(barrier.name)}:</strong> ${esc(barrier.hint)}</li>`).join("")}</ul></section>
-      <section class="guide-block"><h3>Teaching intention</h3><p>${esc(scaffold.intention)}</p><p><strong>Preserve:</strong> the pupil’s choice, explanation and evaluation. Prompt access without supplying the conclusion.</p></section>
-      <section class="guide-block"><h3>Watch for</h3><p>${esc(scaffold.misconception || "Listen for language or actions that reveal an insecure underlying connection.")}</p><p><strong>Useful language:</strong> ${esc((scaffold.vocabulary || []).join(", "))}</p></section>
+      <section class="guide-block"><h3>Subject thinking to preserve</h3><p>${esc(scaffold.disciplinaryThinking || intelligence.profile.disciplinary)}</p><p><strong>Threshold:</strong> ${esc(scaffold.threshold || intelligence.profile.threshold)}</p></section>
+      <section class="guide-block"><h3>Watch and listen for</h3><p>${esc(scaffold.misconception || "Listen for language or actions that reveal an insecure underlying connection.")}</p><p><strong>Useful language:</strong> ${esc((scaffold.vocabulary || []).join(", "))}</p><p><strong>Representation:</strong> ${esc(scaffold.representation || "Use only if it reveals the intended relationship.")}</p></section>
       <section class="guide-block"><h3>Plan the fade</h3><p><strong>Current:</strong> ${esc(stage.name)} · ${esc(stage.description)}</p><p><strong>Next:</strong> ${nextStage ? `${esc(nextStage.name)} · ${esc(nextStage.description)}` : "Ask the pupil to name the self-prompt they will keep when the page is removed."}</p></section>
-      <section class="guide-block"><h3>In-the-moment check</h3><ul><li>Is the scaffold helping the pupil begin?</li><li>Is it leaving the intellectual work intact?</li><li>Which prompt can be covered or removed now?</li></ul></section>
-      <section class="guide-block"><h3>After the lesson</h3><p>Note what the pupil did once support was lighter. Reuse the structure only if the same barrier remains.</p>${blankLines(4)}</section>
+      <section class="guide-block"><h3>In-the-moment questions</h3><ul>${questions.map(item => `<li>${esc(item)}</li>`).join("")}</ul><p><strong>Preserve:</strong> ${esc(engineById(scaffold.engineId).preserves)}</p></section>
+      <section class="guide-block"><h3>Assessment and after-use note</h3><ul>${assessments.map(item => `<li>${esc(item)}</li>`).join("")}</ul><p>What changed once support became lighter?</p>${blankLines(3)}</section>
     </div><footer class="resource-footer"><span>Teacher copy</span><span>Remove the barrier · preserve the challenge</span></footer></article>`;
   }
 
   function renderPrintPage(scaffold, type, index) {
-    const html = type === "resource" ? applyPaperOptions(renderResourceDocument(scaffold)) : renderTeacherGuide(scaffold);
-    return `<div class="page-shell"><div class="page-controls"><span>Page ${index + 1} · ${type === "resource" ? "Pupil resource" : "Teacher guidance"}</span><div><button data-action="move-page" data-id="${type}" data-direction="up" aria-label="Move page up">${icon("up")}</button><button data-action="move-page" data-id="${type}" data-direction="down" aria-label="Move page down">${icon("down")}</button></div></div>${html}</div>`;
+    const html = type === "resource" ? applyPaperOptions(renderFormatDocument(scaffold)) : renderTeacherGuide(scaffold);
+    return `<div class="page-shell"><div class="page-controls"><span>Page ${index + 1} · ${type === "resource" ? esc(printFormatById().name) : "Teacher guidance"}</span><div><button data-action="move-page" data-id="${type}" data-direction="up" aria-label="Move page up">${icon("up")}</button><button data-action="move-page" data-id="${type}" data-direction="down" aria-label="Move page down">${icon("down")}</button></div></div>${html}</div>`;
   }
 
   function renderPrintStudio() {
@@ -789,8 +1047,10 @@
       return `<div class="page-heading"><div><span class="eyebrow">Classroom-ready output</span><h2>Print Studio</h2><p>Control the pupil page and teacher guidance before printing.</p></div></div><div class="empty-help"><span class="empty-mark">${icon("print")}</span><h4>Bring a scaffold here when it is ready</h4><p>Create a scaffold first. Print Studio will then manage paper size, orientation, colour, answers and page order intentionally.</p><button class="button button-primary" data-action="new-scaffold">Create a scaffold</button></div>`;
     }
     const order = state.print.pageOrder.filter(type => type !== "teacher" || state.print.teacherGuidance);
+    const format = printFormatById();
     return `<div class="page-heading"><div><span class="eyebrow">Classroom-ready output</span><h2>Print Studio</h2><p>Preview exactly what will print. Reorder pages, simplify presentation and separate pupil material from teacher guidance.</p></div></div>
       <div class="studio-layout"><aside class="studio-controls"><h3>Print choices</h3>
+        <div class="control-group format-control"><h4>Classroom format</h4><button class="format-current" data-action="choose-print-format"><span>${esc(format.group)}</span><strong>${esc(format.name)}</strong><small>${esc(format.note)}</small></button></div>
         <div class="control-group"><h4>Paper size</h4><div class="segmented">${["a4","a5"].map(value => `<button class="${state.print.paper === value ? "is-active" : ""}" data-print-option="paper" data-value="${value}">${value.toUpperCase()}</button>`).join("")}</div></div>
         <div class="control-group"><h4>Orientation</h4><div class="segmented">${["portrait","landscape"].map(value => `<button class="${state.print.orientation === value ? "is-active" : ""}" data-print-option="orientation" data-value="${value}">${titleCase(value)}</button>`).join("")}</div></div>
         <div class="control-group"><h4>Ink</h4><div class="segmented">${["colour","greyscale"].map(value => `<button class="${state.print.colour === value ? "is-active" : ""}" data-print-option="colour" data-value="${value}">${titleCase(value)}</button>`).join("")}</div></div>
@@ -851,11 +1111,76 @@
     });
   }
 
+  function showPrintFormats() {
+    openModal({
+      title: "Choose a classroom format",
+      subtitle: "One scaffold can travel into the room in different physical forms.",
+      body: `<div class="format-picker">${DATA.printFormats.map(format => `<button class="format-option ${format.id === state.print.format ? "is-selected" : ""}" data-action="select-print-format" data-id="${format.id}"><span>${esc(format.group)}</span><strong>${esc(format.name)}</strong><p>${esc(format.note)}</p><small>${format.pieces} ${format.pieces === 1 ? "piece" : "pieces"} per pupil page</small></button>`).join("")}</div>`
+    });
+  }
+
+  function showQualityReport() {
+    const scaffold = state.activeScaffold || scaffoldFromDraft();
+    const audit = qualityAudit({ ...scaffold, stage: state.draft.stage || scaffold.stage });
+    const overall = Math.round(audit.reduce((sum, item) => sum + item.score, 0) / audit.length);
+    openModal({
+      title: `Scaffold quality · ${overall}/100`,
+      subtitle: "An inspectable design audit, not a claim that classroom judgement can be automated.",
+      body: `<div class="quality-report">${audit.map(item => `<section><div class="quality-report-head"><strong>${esc(item.label)}</strong><span>${item.score}</span></div><div class="quality-track"><i style="width:${item.score}%"></i></div><p>${esc(item.evidence)}</p></section>`).join("")}</div><div class="quality-principle"><strong>Professional judgement remains final.</strong><p>Use this report to spot a design risk. The real test is what pupils do when the support becomes lighter.</p></div>`
+    });
+  }
+
+  function showUseReflection(id) {
+    const scaffold = state.library.find(item => item.id === id) || (state.activeScaffold?.id === id ? state.activeScaffold : null);
+    if (!scaffold) return;
+    const reflection = scaffold.reflection || {};
+    const choice = (name, value, label) => `<label class="reflection-choice"><input type="radio" name="${name}" value="${value}" ${reflection[name] === value ? "checked" : ""}><span>${label}</span></label>`;
+    openModal({
+      title: "Reflect after use",
+      subtitle: `${scaffold.title} · observations here improve future local recommendations.`,
+      body: `<form class="use-reflection" id="use-reflection-form" data-id="${esc(scaffold.id)}">
+        <fieldset><legend>Did the scaffold remove the intended barrier?</legend><div class="reflection-choices">${choice("worked", "not-yet", "Not yet")}${choice("worked", "partly", "Partly")}${choice("worked", "yes", "Yes")}</div></fieldset>
+        <div class="form-field"><label for="reflection-surprise">What surprised you?</label><textarea id="reflection-surprise" name="surprise" rows="3" placeholder="A response, strategy or moment you did not expect…">${esc(reflection.surprise || "")}</textarea></div>
+        <div class="form-field"><label for="reflection-misconception">What misconception actually appeared?</label><textarea id="reflection-misconception" name="misconception" rows="3" placeholder="Use the pupil's words or action if useful…">${esc(reflection.misconception || "")}</textarea></div>
+        <fieldset><legend>Would you reuse this structure?</legend><div class="reflection-choices">${choice("reuse", "no", "No")}${choice("reuse", "adapt", "With changes")}${choice("reuse", "yes", "Yes")}</div></fieldset>
+        <div class="form-field"><label for="reflection-reduce">What could reduce next time?</label><textarea id="reflection-reduce" name="reduceNext" rows="3" placeholder="A prompt, example, word bank or visual cue to remove…">${esc(reflection.reduceNext || "")}</textarea></div>
+      </form>`,
+      footer: '<button class="button" data-action="close-modal">Not now</button><button class="button button-primary" data-action="save-use-reflection">Save reflection</button>'
+    });
+  }
+
+  function saveUseReflection() {
+    const form = document.getElementById("use-reflection-form");
+    if (!form) return;
+    const scaffold = state.library.find(item => item.id === form.dataset.id);
+    if (!scaffold) return;
+    const fields = new FormData(form);
+    const worked = fields.get("worked") || "partly";
+    const reuse = fields.get("reuse") || "adapt";
+    const currentStageIndex = DATA.stages.findIndex(stage => stage.id === scaffold.stage);
+    scaffold.reflection = {
+      worked,
+      reuse,
+      surprise: String(fields.get("surprise") || "").trim(),
+      misconception: String(fields.get("misconception") || "").trim(),
+      reduceNext: String(fields.get("reduceNext") || "").trim(),
+      recommendedNextStage: worked === "yes" ? (DATA.stages[Math.min(currentStageIndex + 1, DATA.stages.length - 1)]?.id || scaffold.stage) : scaffold.stage,
+      updatedAt: new Date().toISOString()
+    };
+    scaffold.updatedAt = new Date().toISOString();
+    if (state.activeScaffold?.id === scaffold.id) state.activeScaffold = scaffold;
+    writeStore(STORAGE.library, state.library);
+    closeModal();
+    toast(worked === "yes" ? "Reflection saved. Future suggestions will favour what worked and a lighter next step." : "Reflection saved. Future suggestions will treat this structure more cautiously.");
+    render();
+  }
+
   function createAIPrompt(scaffold) {
     const subject = subjectById(scaffold.subject);
     const engine = engineById(scaffold.engineId);
     const stage = DATA.stages.find(item => item.id === scaffold.stage);
     const barriers = scaffold.barriers.map(barrierById).filter(Boolean);
+    const intelligence = curriculumIntelligence(scaffold);
     return `Create a professionally designed, classroom-ready scaffold for an English primary classroom.
 
 PRODUCT PHILOSOPHY
@@ -886,8 +1211,14 @@ SCAFFOLD ARCHITECTURE
 - Stage definition: ${stage.description}
 
 SUBJECT KNOWLEDGE TO HANDLE CAREFULLY
+- Active subject lens: ${intelligence.profile.name}
+- Disciplinary thinking to preserve: ${scaffold.disciplinaryThinking || intelligence.profile.disciplinary}
+- Threshold concept: ${scaffold.threshold || intelligence.profile.threshold}
+- Prerequisite knowledge to check: ${(scaffold.prerequisites || intelligence.profile.prerequisites).join("; ")}
+- Intelligent small-step sequence: ${(scaffold.smallSteps || intelligence.profile.smallSteps).join(" → ")}
 - High-leverage vocabulary: ${(scaffold.vocabulary || []).join(", ") || "Select a small, precise set from the learning objective."}
 - Misconception to expose rather than conceal: ${scaffold.misconception || "Identify one plausible misconception from the curriculum context."}
+- Representation choice: ${scaffold.representation || "No fixed representation; choose only if it reveals the intended relationship."}
 - Subject principles: ${subject.principles.join("; ")}
 
 LAYOUT SPECIFICATION
@@ -938,7 +1269,7 @@ Return the finished pupil resource first, followed by the teacher guidance and t
   }
 
   function saveScaffold() {
-    const scaffold = state.activeScaffold || scaffoldFromDraft();
+    const scaffold = state.activeScaffold ? { ...state.activeScaffold, ...scaffoldFromDraft(), id: state.activeScaffold.id, createdAt: state.activeScaffold.createdAt, reflection: state.activeScaffold.reflection || null } : scaffoldFromDraft();
     scaffold.updatedAt = new Date().toISOString();
     const index = state.library.findIndex(item => item.id === scaffold.id);
     if (index >= 0) state.library[index] = scaffold;
@@ -948,6 +1279,7 @@ Return the finished pupil resource first, followed by the teacher guidance and t
     writeStore(STORAGE.library, state.library);
     saveDraft();
     toast(index >= 0 ? "Scaffold changes saved locally." : "Scaffold saved to your library.");
+    render();
   }
 
   function loadScaffold(id) {
@@ -959,6 +1291,8 @@ Return the finished pupil resource first, followed by the teacher guidance and t
       selectedBarriers: scaffold.barriers,
       vocabulary: (scaffold.vocabulary || []).join(", "),
       tags: (scaffold.tags || []).join(", "),
+      familyId: scaffold.familyId,
+      representation: scaffold.representation,
       editingId: scaffold.id
     });
     analyseBarrier();
@@ -973,7 +1307,7 @@ Return the finished pupil resource first, followed by the teacher guidance and t
     const original = state.library.find(item => item.id === id);
     if (!original) return;
     const now = new Date().toISOString();
-    const copy = { ...original, id: uid(), title: `${original.title} · copy`, favourite: false, createdAt: now, updatedAt: now };
+    const copy = { ...original, id: uid(), title: `${original.title} · copy`, favourite: false, reflection: null, createdAt: now, updatedAt: now };
     state.library.unshift(copy);
     writeStore(STORAGE.library, state.library);
     toast("A fresh copy has been added to your library.");
@@ -1040,7 +1374,7 @@ Return the finished pupil resource first, followed by the teacher guidance and t
     if (!scaffold) return;
     const order = state.print.pageOrder.filter(type => type !== "teacher" || state.print.teacherGuidance);
     const printRoot = document.getElementById("print-root");
-    printRoot.innerHTML = order.map(type => type === "resource" ? applyPaperOptions(renderResourceDocument(scaffold)) : renderTeacherGuide(scaffold)).join("");
+    printRoot.innerHTML = order.map(type => type === "resource" ? applyPaperOptions(renderFormatDocument(scaffold)) : renderTeacherGuide(scaffold)).join("");
     let style = document.getElementById("print-dynamic-style");
     if (!style) {
       style = document.createElement("style");
@@ -1121,12 +1455,14 @@ Return the finished pupil resource first, followed by the teacher guidance and t
     if (action === "choose-engine") {
       state.draft.engineId = id;
       state.draft.preferredEngine = "";
+      state.draft.familyId = engineById(id).family;
       saveDraft();
       render();
     }
     if (action === "modal-choose-engine") {
       state.draft.engineId = id;
       state.draft.preferredEngine = "";
+      state.draft.familyId = engineById(id).family;
       saveDraft();
       closeModal();
       render();
@@ -1135,6 +1471,7 @@ Return the finished pupil resource first, followed by the teacher guidance and t
     if (action === "show-all-engines") showAllEngines();
     if (action === "choose-stage") {
       state.draft.stage = id;
+      if (state.activeScaffold) state.activeScaffold = { ...state.activeScaffold, stage: id };
       saveDraft();
       render();
     }
@@ -1149,6 +1486,9 @@ Return the finished pupil resource first, followed by the teacher guidance and t
       render();
     }
     if (action === "save-scaffold") saveScaffold();
+    if (action === "record-use-reflection") showUseReflection(id);
+    if (action === "save-use-reflection") saveUseReflection();
+    if (action === "show-quality-report") showQualityReport();
     if (action === "open-print") {
       state.activeScaffold = state.activeScaffold || scaffoldFromDraft();
       navigate("print");
@@ -1189,7 +1529,26 @@ Return the finished pupil resource first, followed by the teacher guidance and t
     }
     if (action === "knowledge-subject") {
       state.knowledgeSubject = id;
+      state.knowledgeProfile = brainBySubject(id).profiles[0].id;
       render();
+    }
+    if (action === "knowledge-profile") {
+      state.knowledgeProfile = id;
+      render();
+    }
+    if (action === "knowledge-lens") {
+      state.knowledgeLens = id;
+      render();
+    }
+    if (action === "choose-print-format") showPrintFormats();
+    if (action === "select-print-format") {
+      state.print.format = id;
+      closeModal();
+      render();
+    }
+    if (action === "copy-question") {
+      const question = button.dataset.question || button.textContent.trim();
+      navigator.clipboard?.writeText(question).then(() => toast("Teacher question copied."), () => toast("Select and copy the question from the screen."));
     }
     if (action === "move-page") {
       const currentIndex = state.print.pageOrder.indexOf(id);
@@ -1219,6 +1578,10 @@ Return the finished pupil resource first, followed by the teacher guidance and t
     if (field && field.tagName !== "SELECT") {
       state.draft[field.dataset.draftField] = field.value;
       saveDraft();
+      if (field.dataset.draftField === "situation") {
+        const guidance = document.getElementById("live-guidance");
+        if (guidance) guidance.innerHTML = renderLiveGuidance();
+      }
       return;
     }
     const filter = event.target.closest("[data-library-filter='query']");
@@ -1243,6 +1606,13 @@ Return the finished pupil resource first, followed by the teacher guidance and t
         state.draft.objective = entry?.objectives[0] || "";
       }
       if (key === "topic") state.draft.objective = currentEntry()?.objectives[0] || "";
+      if (["year", "subject", "topic", "objective"].includes(key)) {
+        state.draft.analysis = [];
+        state.draft.recommendations = [];
+        state.draft.engineId = "";
+        state.draft.familyId = "";
+        state.draft.representation = "";
+      }
       saveDraft();
       if (field.tagName === "SELECT") render();
     }

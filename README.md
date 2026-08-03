@@ -4,18 +4,19 @@ Scaffold Seeds is a local-first classroom scaffold designer for primary teachers
 
 The application reasons from year group, subject, curriculum area, learning objective and a teacher's observation. It then suggests likely barriers and recommends a scaffold structure designed to remove the barrier without lowering the challenge.
 
-## Build 1 foundation
+## Build 2 · Deep pedagogical intelligence
 
-- EYFS to Year 6 contexts for English, mathematics, science, history, geography and computing
-- barrier analysis with teacher-controlled selection
-- 15 distinctive scaffold engines
-- Seed, Sprout, Growth and Independent fading stages
-- classroom-ready pupil resource and separate teacher guidance
-- A4, A5, portrait, landscape, colour, greyscale, large-print and photocopy modes
-- local library with edit, duplicate, tags, favourites, search and filters
-- local reflections, settings and JSON backup/restore
-- detailed AI Companion prompts without external integration or data transfer
-- keyboard, touch, screen-reader, high-contrast and reduced-motion support
+- EYFS to Year 6 curriculum contexts for English, mathematics, science, history, geography and computing
+- subject-specific curriculum brains organised around big ideas, threshold concepts, prerequisite knowledge, small steps, disciplinary thinking, misconceptions, vocabulary, representations, assessment and teacher decisions
+- distinct lenses for reading, fluency, composition, grammar, spelling, oracy, editing and handwriting; mathematical structures and representation choice; scientific knowledge and enquiry; historical concepts; geographical place, scale and fieldwork; and computing logic, data, systems and debugging
+- 12 scaffold families and 15 distinctive engines with explained recommendations and caution conditions
+- live, non-interrupting design guidance as a teacher describes the learning barrier
+- Seed, Sprout, Growth and Independent versions that can be switched instantly
+- an eight-part quality dashboard covering curriculum alignment, barrier precision, challenge, independence, clarity, cognitive load, print quality and fade potential
+- Knowledge Studio for professional subject browsing
+- 10 classroom print formats including workpages, reusable cards, desk strips, paired discussion cards, posters and foldables
+- after-use reflection that informs future recommendations on the same device
+- local library, accessibility controls, JSON backup/restore and detailed external AI prompts without data transfer
 
 ## Run locally
 
