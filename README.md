@@ -2,11 +2,13 @@
 
 Scaffold Seeds is a local-first scaffold designer for primary teachers in England. It begins with one question: **Where are pupils getting stuck?** It helps a teacher identify the barrier, preserve the curriculum thinking, choose the smallest useful support and plan how that support will disappear.
 
-This repository contains the Build 5 Gold Master release candidate. It completes and refines the systems developed across Builds 1–4; it does not replace them with a new application.
+This repository contains the Build 6 reduced release candidate. It preserves the Build 5 Gold Master engines, curriculum, verification, persistence and print systems while removing interface competition and repeated decisions.
 
 ## Release identity
 
-- one seven-step teacher workflow: Learning → Sticking point → Protect thinking → Choose support → Build → Review → Output
+- one four-decision teacher workflow: Need → Support → Shape → Use
+- two permanent destinations: Home and Library; curriculum reference and preferences remain occasional utilities
+- Print and AI appear only in the context of a completed scaffold rather than as competing starting points
 - 78 local scaffold engines across 13 subject areas, EYFS to Year 6
 - explicit curriculum-profile and year-progression routing, with honest England, locally determined RE and September 2026 RSHE/EYFS context labels
 - a protected `coreTask` that remains visible while examples, vocabulary, prompts and adult cues reduce across Seed, Sprout, Growth and Independent
@@ -70,7 +72,7 @@ External AI remains optional, provider-neutral and outside the application. Scaf
 - `ai-companion.js` — prompt construction, privacy scrubbing, safe import, comparison and provenance
 - `persistence.js` — schema-v5 validation, IndexedDB transactions, conflicts, recovery and portability
 - `app.js` — teacher workflow, Library, Reflection Studio, AI editorial desk and Print Studio
-- `styles.css` — unified Playwrite design system, semantic print palettes and responsive/accessibility rules
+- `styles.css` — reduced Playwrite interface, semantic print palettes and responsive/accessibility rules
 - `manifest.webmanifest` / `sw.js` — installable offline application shell
 
 ## Run locally
@@ -91,9 +93,10 @@ node tests/build5-persistence.test.js
 node tests/build5-release.test.js
 node tests/build5-static.test.js
 node tests/build5-simulation.test.js
+node tests/build6-reduction.test.js
 ```
 
-The combined automated suite covers 106,402 assertions. Its core combinatorial gate generates 41,496 subject × year × engine × stage × format cases; the release simulation adds the complete 1,064-case print-rule matrix and a 5,000-resource library load. See `tests/BUILD5_RELEASE_PROTOCOL.md` for the accessibility, iPad Safari and physical print sign-off that cannot be established by a static test runtime.
+The combined automated suite covers 106,444 assertions. Its core combinatorial gate generates 41,496 subject × year × engine × stage × format cases; the release simulation adds the complete 1,064-case print-rule matrix and a 5,000-resource library load. Build 6 adds explicit reduction gates for permanent navigation, the four-decision workflow, progressive disclosure and removal of superseded screens. See `tests/BUILD6_REDUCTION_PROTOCOL.md` for the reduction record and `tests/BUILD5_RELEASE_PROTOCOL.md` for the accessibility, iPad Safari and physical print sign-off that cannot be established by a static test runtime.
 
 ## Privacy
 
