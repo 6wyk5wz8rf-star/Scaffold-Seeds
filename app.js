@@ -2,11 +2,14 @@
   "use strict";
 
   const DATA = window.SCAFFOLD_DATA;
+  const RESOURCE = window.ScaffoldResourceEngine;
   const STORAGE = {
     library: "scaffold-seeds.library.v1",
     settings: "scaffold-seeds.settings.v1",
     reflections: "scaffold-seeds.reflections.v1",
-    draft: "scaffold-seeds.draft.v1"
+    draft: "scaffold-seeds.draft.v1",
+    archives: "scaffold-seeds.archives.v3",
+    preferences: "scaffold-seeds.preferences.v3"
   };
 
   const defaultSettings = {
@@ -15,7 +18,19 @@
     reduceMotion: false,
     defaultPaper: "a4",
     defaultColour: "colour",
-    defaultStage: "sprout"
+    defaultStage: "sprout",
+    interfaceScale: "standard",
+    preferredDensity: "calm",
+    typicalYear: "Year 4",
+    favouriteSubjects: ["english", "mathematics"],
+    includeTeacherGuidance: true,
+    includeAnswers: false,
+    defaultGrowthStages: ["sprout"],
+    lineThickness: "standard",
+    pageNumbers: true,
+    schoolLabel: "",
+    classLabel: "",
+    terminology: "pupils"
   };
 
   const state = {
@@ -24,9 +39,11 @@
     library: readStore(STORAGE.library, []),
     settings: { ...defaultSettings, ...readStore(STORAGE.settings, {}) },
     reflections: readStore(STORAGE.reflections, {}),
+    archives: readStore(STORAGE.archives, []),
+    preferences: readStore(STORAGE.preferences, { largerWritingArea: false, questionPrompts: false, printMode: "" }),
     draft: normaliseDraft(readStore(STORAGE.draft, null)),
     activeScaffold: null,
-    libraryFilters: { query: "", year: "all", subject: "all", favourite: false },
+    libraryFilters: { query: "", year: "all", subject: "all", family: "all", format: "all", stage: "all", favourite: false, archived: false, sort: "edited" },
     knowledgeSubject: "english",
     knowledgeProfile: "reading",
     knowledgeLens: "ideas",
@@ -39,12 +56,25 @@
       answers: false,
       largePrint: false,
       photocopy: false,
-      pageOrder: ["resource", "teacher"]
-    }
+      cropMarks: false,
+      cutLines: true,
+      duplex: false,
+      arrangement: "single",
+      stages: ["sprout"]
+    },
+    saveStatus: "saved",
+    compareStages: false,
+    aiTask: "accurate-examples",
+    aiMode: "full",
+    aiPromptEdit: "",
+    importType: "vocabulary"
   };
 
   state.print.paper = state.settings.defaultPaper;
   state.print.colour = state.settings.defaultColour;
+  state.print.teacherGuidance = state.settings.includeTeacherGuidance;
+  state.print.answers = state.settings.includeAnswers;
+  state.print.stages = [...state.settings.defaultGrowthStages];
   if (!state.activeScaffold && state.library.length) state.activeScaffold = state.library[0];
 
   const main = document.getElementById("main-content");
@@ -100,12 +130,25 @@
 
   function writeStore(key, value) {
     try {
+      setSaveStatus("saving");
       localStorage.setItem(key, JSON.stringify(value));
+      setSaveStatus("saved");
       return true;
     } catch (error) {
+      setSaveStatus("issue");
       toast("Browser storage is unavailable. Your changes remain in this session.");
       return false;
     }
+  }
+
+  function setSaveStatus(status) {
+    state.saveStatus = status;
+    const target = document.getElementById("save-status");
+    if (!target) return;
+    const labels = { saving: "Saving", saved: "Saved", unsaved: "Unsaved changes", issue: "Storage issue" };
+    target.className = `local-status status-${status}`;
+    const label = target.querySelector("b");
+    if (label) label.textContent = labels[status] || "Saved";
   }
 
   function normaliseDraft(saved) {
@@ -115,6 +158,7 @@
       topic: saved?.topic || "Fractions",
       objective: saved?.objective || "Recognise and show equivalent fractions",
       phase: saved?.phase || "Guided practice",
+      expectedOutcome: saved?.expectedOutcome || "Pupils complete the core subject decision and explain how it supports the learning objective.",
       situation: saved?.situation || "",
       selectedBarriers: saved?.selectedBarriers || [],
       analysis: saved?.analysis || [],
@@ -126,9 +170,37 @@
       vocabulary: saved?.vocabulary || "",
       misconception: saved?.misconception || "",
       intention: saved?.intention || "Keep the core thinking with pupils while making the route into the task clear.",
+      essentialThinking: saved?.essentialThinking || "",
+      pupilAction: saved?.pupilAction || "Use the scaffold to enter the task, then make and explain the central subject decision.",
+      removalPathway: saved?.removalPathway || "Remove the model first, then reduce prompts, then retain only one pupil-owned self-check.",
+      customBarrier: saved?.customBarrier || "",
       tags: saved?.tags || "",
       familyId: saved?.familyId || "",
       representation: saved?.representation || "",
+      content: {
+        instruction: saved?.content?.instruction || "",
+        subInstruction: saved?.content?.subInstruction || "",
+        example: saved?.content?.example || "",
+        prompts: saved?.content?.prompts || [],
+        vocabulary: saved?.content?.vocabulary || [],
+        misconception: saved?.content?.misconception || "",
+        teacherNotes: saved?.content?.teacherNotes || "",
+        oralPrompt: saved?.content?.oralPrompt || "",
+        checkPrompt: saved?.content?.checkPrompt || "",
+        independencePrompt: saved?.content?.independencePrompt || "",
+        diagramType: saved?.content?.diagramType || "",
+        diagramLabels: saved?.content?.diagramLabels || [],
+        responseSpace: saved?.content?.responseSpace || "standard",
+        instructionMode: saved?.content?.instructionMode || "standard",
+        density: saved?.content?.density || defaultSettings.preferredDensity,
+        oralRehearsal: saved?.content?.oralRehearsal ?? false,
+        hiddenSections: saved?.content?.hiddenSections || []
+      },
+      diagram: saved?.diagram || { type: "", labels: [], values: [] },
+      format: saved?.format || "workpage",
+      growthStages: saved?.growthStages || ["seed", "sprout", "growth", "independent"],
+      teacherNotes: saved?.teacherNotes || "",
+      aiTask: saved?.aiTask || "accurate-examples",
       editingId: saved?.editingId || null
     };
   }
@@ -240,6 +312,7 @@
     document.body.classList.toggle("high-contrast", state.settings.highContrast);
     document.body.classList.toggle("large-text", state.settings.largeText);
     document.body.classList.toggle("reduce-motion", state.settings.reduceMotion);
+    document.body.classList.toggle("strong-lines", state.settings.lineThickness === "strong");
   }
 
   function navigate(view, options = {}) {
@@ -278,7 +351,7 @@
   }
 
   function newScaffold(preset = {}) {
-    state.draft = normaliseDraft({ ...preset, stage: preset.stage || state.settings.defaultStage });
+    state.draft = normaliseDraft({ year: state.settings.typicalYear, ...preset, stage: preset.stage || state.settings.defaultStage, content: { density: state.settings.preferredDensity, responseSpace: state.preferences.largerWritingArea ? "large" : "standard", ...(preset.content || {}) } });
     state.activeScaffold = null;
     state.createStep = 0;
     saveDraft();
@@ -363,16 +436,16 @@
   }
 
   function renderCreate() {
-    const stepNames = ["Context", "The barrier", "Analysis", "Design", "Review"];
-    const content = [renderContextStep, renderSituationStep, renderAnalysisStep, renderDesignStep, renderReviewStep][state.createStep]();
+    const stepNames = ["Learning", "Sticking point", "Protect thinking", "Choose support", "Build", "Review", "Output"];
+    const content = [renderContextStep, renderSituationStep, renderAnalysisStep, renderSupportStep, renderDesignStep, renderReviewStep, renderOutputStep][state.createStep]();
     const intelligence = curriculumIntelligence();
     const summary = state.draft.objective
       ? `<div class="context-summary"><h4>Current context</h4><p>${esc(state.draft.year)} · ${esc(subjectById(state.draft.subject).name)}<br>${esc(state.draft.objective)}</p></div>`
       : "";
     return `
-      <div class="page-heading"><div><span class="eyebrow">A calm, five-part process</span><h2>Design from the barrier</h2><p>Start with what pupils need to think about—not with a pre-selected sheet.</p></div></div>
-      <div class="create-layout ${state.createStep === 4 ? "is-review" : ""}">
-        <section class="create-card" aria-label="Scaffold creation step ${state.createStep + 1} of 5">${content}</section>
+      <div class="page-heading"><div><span class="eyebrow">The scaffold engineering pathway</span><h2>Design from the barrier</h2><p>Protect the subject thinking first. Add only the smallest temporary support that makes entry possible.</p></div></div>
+      <div class="create-layout ${state.createStep >= 4 ? "is-review" : ""}">
+        <section class="create-card" aria-label="Scaffold creation step ${state.createStep + 1} of 7">${content}</section>
         <aside class="create-rail">
           <div class="progress-card"><h3>Your path</h3><div class="step-list">
             ${stepNames.map((name, index) => `<div class="step-item ${index === state.createStep ? "is-active" : index < state.createStep ? "is-complete" : ""}"><span class="step-dot">${index < state.createStep ? "✓" : index + 1}</span><span>${name}</span></div>`).join("")}
@@ -400,13 +473,15 @@
     const entry = currentEntry();
     if (entry && !entry.objectives.includes(state.draft.objective)) state.draft.objective = entry.objectives[0];
     const intelligence = curriculumIntelligence();
+    const frameworkNote = state.draft.subject === "religious-education" ? "Use the objective wording from your school's locally applicable RE syllabus." : state.draft.subject === "pshe" ? "Check the final objective against your school policy and the statutory guidance in force." : state.draft.subject === "languages" && !["Year 3", "Year 4", "Year 5", "Year 6"].includes(state.draft.year) ? "Languages is statutory at Key Stage 2; earlier work may be school enrichment." : "";
     return `${createHead(1, "Set the learning context", "A little precision here makes every later recommendation more useful.")}
       <div class="create-card-body"><div class="form-grid">
         <div class="form-field"><label for="year">Year group</label><div class="select-wrap"><select id="year" data-draft-field="year">${DATA.years.map(year => `<option ${year === state.draft.year ? "selected" : ""}>${esc(year)}</option>`).join("")}</select></div></div>
         <div class="form-field"><label for="subject">Subject</label><div class="select-wrap"><select id="subject" data-draft-field="subject">${DATA.subjects.map(subject => `<option value="${subject.id}" ${subject.id === state.draft.subject ? "selected" : ""}>${esc(subject.name)}</option>`).join("")}</select></div></div>
         <div class="form-field"><label for="topic">Curriculum area</label><div class="select-wrap"><select id="topic" data-draft-field="topic">${entries.map(item => `<option ${item.title === state.draft.topic ? "selected" : ""}>${esc(item.title)}</option>`).join("")}</select></div></div>
         <div class="form-field"><label for="phase">Lesson phase</label><div class="select-wrap"><select id="phase" data-draft-field="phase">${DATA.lessonPhases.map(phase => `<option ${phase === state.draft.phase ? "selected" : ""}>${esc(phase)}</option>`).join("")}</select></div></div>
-        <div class="form-field span-2"><label for="objective">Learning objective <small>— curriculum-informed and fully editable</small></label><div class="select-wrap"><select id="objective" data-draft-field="objective">${(entry?.objectives || []).map(objective => `<option ${objective === state.draft.objective ? "selected" : ""}>${esc(objective)}</option>`).join("")}</select></div><input class="input" id="custom-objective" data-draft-field="objective" value="${esc(state.draft.objective)}" aria-label="Edit learning objective"><span class="field-hint">Use the wording that pupils will encounter in this lesson.</span></div>
+        <div class="form-field span-2"><label for="objective">Learning objective <small>— curriculum-informed and fully editable</small></label><div class="select-wrap"><select id="objective" data-draft-field="objective">${(entry?.objectives || []).map(objective => `<option ${objective === state.draft.objective ? "selected" : ""}>${esc(objective)}</option>`).join("")}</select></div><input class="input" id="custom-objective" data-draft-field="objective" value="${esc(state.draft.objective)}" aria-label="Edit learning objective"><span class="field-hint">${esc(frameworkNote || "Use the wording that pupils will encounter in this lesson.")}</span></div>
+        <div class="form-field span-2"><label for="expected-outcome">Expected pupil outcome <small>— what successful thinking or action will be visible?</small></label><textarea id="expected-outcome" data-draft-field="expectedOutcome" rows="2">${esc(state.draft.expectedOutcome)}</textarea></div>
       </div>
       <div class="curriculum-glance" style="--subject-colour:${intelligence.subject.colour}">
         <div><span class="eyebrow">Big idea beneath this area</span><strong>${esc(intelligence.brain.bigIdeas[0])}</strong></div>
@@ -450,12 +525,12 @@
   function renderAnalysisStep() {
     if (!state.draft.analysis.length) analyseBarrier();
     const selected = state.draft.selectedBarriers;
-    const recommended = state.draft.recommendations.map(engineById);
     const intelligence = curriculumIntelligence();
-    const representation = intelligence.representations[0];
-    return `${createHead(3, "Consider the likely barrier", "These are reasoned suggestions, not labels. Keep, remove or add what matches your pupils.")}
+    if (!state.draft.essentialThinking) state.draft.essentialThinking = protectedThinkingStatement();
+    return `${createHead(3, "Protect the thinking", "Agree what pupils must still decide, interpret, create or explain before choosing any support.")}
       <div class="create-card-body">
-        <div class="analysis-intro"><span class="analysis-mark">${icon("brain")}</span><div><h3>The difficulty may sit in more than one place</h3><p>Recommendations combine your description with the curriculum demand and common misconceptions for this area.</p></div></div>
+        <div class="protected-thinking-card"><span class="eyebrow">The non-negotiable pupil thinking</span><blockquote>${esc(state.draft.essentialThinking)}</blockquote><p>A useful scaffold makes this possible. It does not perform it.</p></div>
+        <div class="form-field thinking-editor"><label for="essential-thinking">Edit the protected thinking</label><textarea id="essential-thinking" data-draft-field="essentialThinking" rows="3">${esc(state.draft.essentialThinking)}</textarea></div>
         <div class="pedagogy-map" style="--subject-colour:${intelligence.subject.colour}">
           <section><span>Threshold concept</span><p>${esc(intelligence.profile.threshold)}</p></section>
           <section><span>Prerequisite to check</span><p>${esc(intelligence.profile.prerequisites[0])}</p></section>
@@ -467,13 +542,45 @@
             const barrier = barrierById(result.id);
             return `<button class="barrier-card ${selected.includes(result.id) ? "is-selected" : ""}" data-action="toggle-barrier" data-id="${result.id}" aria-pressed="${selected.includes(result.id)}"><span class="barrier-icon">${icon(index % 2 ? "knowledge" : "brain")}</span><span><h4>${esc(barrier.name)}</h4><p>${esc(result.reason || barrier.hint)}</p></span><span class="confidence">${index < 2 ? "Strong fit" : "Possible"}</span></button>`;
           }).join("")}
-        </div><button class="text-link" data-action="show-all-barriers">+ Review all barrier types</button></div>
-        ${representation ? `<div class="representation-advice"><div><span class="eyebrow">Representation recommendation</span><h3>${esc(representation.name)}</h3><p>Use it ${esc(representation.use)}. Avoid it ${esc(representation.avoid)}.</p></div><span class="advice-mark">${icon("eye")}</span></div>` : ""}
-        <div class="analysis-section"><h3>Recommended scaffold engines</h3><p>Each recommendation is based on the subject thinking, the likely barrier and the lesson phase.</p><div class="engine-recommendations">
-          ${recommended.map((engine, index) => `<button class="engine-card engine-card-rich ${state.draft.engineId === engine.id ? "is-selected" : ""}" data-action="choose-engine" data-id="${engine.id}" aria-pressed="${state.draft.engineId === engine.id}">${index === 0 ? '<span class="best-fit">Best fit</span>' : ""}<span class="engine-number">${String(index + 1).padStart(2, "0")}</span><span class="family-label">${esc(familyById(engine.family).name)}</span><h4>${esc(engine.name)}</h4><p>${esc(engine.tagline)}</p><small><strong>Why here:</strong> ${esc(recommendationReason(engine))}</small><small class="preserve-line"><strong>Preserves:</strong> ${esc(engine.preserves)}</small></button>`).join("")}
-        </div><button class="text-link" data-action="show-all-engines">Browse all 15 engines</button></div>
+        </div><button class="text-link" data-action="show-all-barriers">+ Review all barrier types</button>${selected.length ? `<div class="selected-barrier-order"><span class="form-label">Priority order</span>${selected.map((id, index) => `<section><span>${index + 1}</span><strong>${esc(barrierById(id)?.name || id)}</strong><div><button data-action="move-barrier" data-id="${id}" data-direction="up" aria-label="Move ${esc(barrierById(id)?.name || id)} up">↑</button><button data-action="move-barrier" data-id="${id}" data-direction="down" aria-label="Move ${esc(barrierById(id)?.name || id)} down">↓</button></div></section>`).join("")}</div>` : ""}</div>
+        <div class="form-field custom-barrier-field"><label for="custom-barrier">Add or refine a barrier <small>— describe the task–pupil relationship, not a fixed label</small></label><input id="custom-barrier" class="input" data-draft-field="customBarrier" value="${esc(state.draft.customBarrier)}" placeholder="For example: the dense source layout obscures chronology"></div>
+        <div class="six-decisions"><section><span>Intended learning</span><strong>${esc(state.draft.objective)}</strong></section><section><span>Barrier</span><strong>${esc(selected.map(id => barrierById(id)?.name).filter(Boolean).join(" · ") || "Choose the best explanation")}</strong></section><section><span>Pupil action</span><strong>${esc(state.draft.pupilAction)}</strong></section></div>
       </div>
-      ${stepFooter({ nextLabel: "Shape the scaffold" })}`;
+      ${stepFooter({ nextLabel: "Choose the smallest support" })}`;
+  }
+
+  function protectedThinkingStatement(draft = state.draft) {
+    const profile = profileForDraft(draft);
+    const subjectStatements = {
+      english: "Pupils must still select, shape and justify the language or reading decision that creates meaning.",
+      mathematics: "Pupils must still identify the mathematical structure, choose a fitting strategy and justify why it works.",
+      science: "Pupils must still interpret the evidence and connect it to an accurate scientific idea or mechanism.",
+      history: "Pupils must still use period knowledge and evidence to form and test a historical interpretation.",
+      geography: "Pupils must still connect located evidence, scale and process to form a geographical explanation.",
+      computing: "Pupils must still design or trace the logic, diagnose behaviour and choose a test.",
+      art: "Pupils must still look, experiment and make a personal visual or material choice for an intended effect.",
+      "design-technology": "Pupils must still translate user and purpose into a functional design, test it and choose an improvement.",
+      music: "Pupils must still listen, perform or compose through sound and make a musical choice.",
+      "physical-education": "Pupils must still perceive the movement or game situation and adjust their own physical or tactical action.",
+      languages: "Pupils must still select meaning, listen and respond, while keeping the target-language pattern accurate.",
+      "religious-education": "Pupils must still use contextual knowledge to interpret diversity and form a reasoned account.",
+      pshe: "Pupils must still interpret the neutral scenario, choose a safe response and explain the route to help."
+    };
+    return subjectStatements[draft.subject] || `Pupils must still perform the central ${profile.name.toLowerCase()} decision and explain it.`;
+  }
+
+  function renderSupportStep() {
+    if (!state.draft.recommendations.length) updateRecommendations();
+    const intelligence = curriculumIntelligence();
+    const recommended = state.draft.recommendations.map(engineById);
+    const representation = intelligence.representations[0];
+    return `${createHead(4, "Choose the smallest useful support", "Three reasoned options are shown. Compare what each gives, what it leaves and how it fades.")}
+      <div class="create-card-body">
+        <div class="support-protection-line"><span>${icon("brain")}</span><div><strong>Still with the pupil</strong><p>${esc(state.draft.essentialThinking || protectedThinkingStatement())}</p></div></div>
+        ${representation ? `<div class="representation-advice"><div><span class="eyebrow">Representation to consider—not force</span><h3>${esc(representation.name)}</h3><p>Useful ${esc(representation.use)}. Avoid ${esc(representation.avoid)}.</p></div><span class="advice-mark">${icon("eye")}</span></div>` : ""}
+        <div class="engine-recommendations build3-recommendations">${recommended.map((engine, index) => `<button class="engine-card engine-card-rich ${state.draft.engineId === engine.id ? "is-selected" : ""}" data-action="choose-engine" data-id="${engine.id}" aria-pressed="${state.draft.engineId === engine.id}">${index === 0 ? '<span class="best-fit">Best fit</span>' : ""}<span class="engine-number">${String(index + 1).padStart(2, "0")}</span><span class="family-label">${esc(familyById(engine.family).name)}</span><h4>${esc(engine.name)}</h4><p>${esc(engine.tagline)}</p><small><strong>Supports:</strong> ${esc(engine.bestFor || engine.tagline)}</small><small class="preserve-line"><strong>Leaves:</strong> ${esc(engine.preserves || state.draft.essentialThinking)}</small><small><strong>Best now:</strong> ${esc(state.draft.phase)}</small><small class="risk-line"><strong>Watch:</strong> ${esc(engine.risk || "Remove prompts as soon as the central decision is secure.")}</small><small><strong>Fade:</strong> ${esc(RESOURCE.nextFade({ ...scaffoldFromDraft(), engineId: engine.id, stage: state.settings.defaultStage }))}</small></button>`).join("")}</div>
+        <button class="text-link" data-action="show-all-engines">Browse all ${DATA.engines.length} professional engines</button>
+      </div>${stepFooter({ nextLabel: "Open the live designer" })}`;
   }
 
   function renderDesignStep() {
@@ -487,50 +594,84 @@
     if (!state.draft.misconception) state.draft.misconception = misconception;
     if (!state.draft.familyId) state.draft.familyId = engine.family;
     if (!state.draft.representation) state.draft.representation = intelligence.representations[0]?.name || "";
+    if (!state.draft.essentialThinking) state.draft.essentialThinking = protectedThinkingStatement();
+    const generated = RESOURCE.normalise(scaffoldFromDraft());
+    const currentContent = state.draft.content || {};
+    if (!currentContent.instruction) state.draft.content = { ...generated.content, ...currentContent, instruction: generated.content.instruction, prompts: currentContent.prompts?.length ? currentContent.prompts : generated.content.prompts, vocabulary: currentContent.vocabulary?.length ? currentContent.vocabulary : generated.content.vocabulary, example: currentContent.example || generated.content.example, subInstruction: currentContent.subInstruction || generated.content.subInstruction, misconception: currentContent.misconception || generated.content.misconception, oralPrompt: currentContent.oralPrompt || generated.content.oralPrompt, checkPrompt: currentContent.checkPrompt || generated.content.checkPrompt, independencePrompt: currentContent.independencePrompt || generated.content.independencePrompt, diagramType: currentContent.diagramType || engine.diagram || "" };
     const activeStage = DATA.stages.find(stage => stage.id === state.draft.stage) || DATA.stages[1];
     const nextStage = DATA.stages[DATA.stages.findIndex(stage => stage.id === state.draft.stage) + 1];
-    return `${createHead(4, "Shape the support", `${engine.name} · ${engine.tagline}`)}
-      <div class="create-card-body">
-        <div class="design-identity" style="--subject-colour:${intelligence.subject.colour}"><div><span class="eyebrow">${esc(familyById(engine.family).name)} family</span><h3>${esc(engine.name)}</h3><p>${esc(engine.bestFor)}</p></div><div><span>Protect</span><p>${esc(engine.preserves)}</p></div></div>
-        <span class="form-label">Choose the point on the growth pathway</span>
-        <div class="stage-path" role="radiogroup" aria-label="Support stage">
-          ${DATA.stages.map(stage => `<button class="stage-option ${stage.id === state.draft.stage ? "is-selected" : ""}" role="radio" aria-checked="${stage.id === state.draft.stage}" data-action="choose-stage" data-id="${stage.id}"><span class="stage-glyph">${stage.glyph}</span><strong>${stage.name}</strong><small>${stage.support}</small></button>`).join("")}
+    const scaffold = { ...scaffoldFromDraft(), content: state.draft.content, diagram: { ...state.draft.diagram, type: state.draft.content.diagramType, labels: state.draft.content.diagramLabels } };
+    const diagramTypes = ["", "number-line", "part-whole", "place-value", "array", "bar-model", "fraction-strip", "timeline", "causal-chain", "flowchart", "classification-tree", "concept-map", "cycle"];
+    const hidden = state.draft.content.hiddenSections || [];
+    return `${createHead(5, "Build in the live Scaffold Designer", `${engine.name} · edit the structure without turning the page into free-form desktop publishing.`)}
+      <div class="create-card-body designer-shell">
+        <div class="designer-toolbar"><div class="compact-stage-path">${DATA.stages.map(stage => `<button class="${stage.id === state.draft.stage ? "is-active" : ""}" data-action="choose-stage" data-id="${stage.id}"><span>${stage.glyph}</span>${esc(stage.name)}</button>`).join("")}</div><button class="button button-compact" data-action="toggle-stage-compare">Compare all stages</button><div class="autosave-indicator"><span></span>${state.saveStatus === "issue" ? "Storage issue" : "Autosaved locally"}</div></div>
+        <div class="live-designer-grid">
+          <aside class="designer-controls" aria-label="Resource controls">
+            <div class="design-identity" style="--subject-colour:${intelligence.subject.colour}"><div><span class="eyebrow">${esc(familyById(engine.family).name)} family</span><h3>${esc(engine.name)}</h3></div><div><span>Protect</span><p>${esc(engine.preserves)}</p></div></div>
+            <details open><summary>Core content</summary><div class="designer-control-body">
+              <div class="form-field"><label for="scaffold-title">Title</label><input class="input" id="scaffold-title" data-draft-field="title" value="${esc(state.draft.title)}"></div>
+              <div class="form-field"><label for="content-instruction">Pupil instruction</label><textarea id="content-instruction" data-content-field="instruction" rows="2">${esc(state.draft.content.instruction)}</textarea><button class="inline-action" data-action="regenerate-section" data-section="instruction">Shorten access language</button></div>
+              <div class="form-field"><label for="content-example">Example or partial example</label><textarea id="content-example" data-content-field="example" rows="3">${esc(state.draft.content.example)}</textarea><button class="inline-action" data-action="regenerate-section" data-section="example">Generate another local example frame</button></div>
+              <div class="form-field"><label for="content-prompts">Prompts <small>— one per line</small></label><textarea id="content-prompts" data-content-field="prompts" data-list-mode="lines" rows="5">${esc((state.draft.content.prompts || []).join("\n"))}</textarea><button class="inline-action" data-action="regenerate-section" data-section="prompts">Replace stems with questions</button></div>
+              <div class="form-field"><label for="content-vocabulary">Vocabulary <small>— comma separated</small></label><textarea id="content-vocabulary" data-content-field="vocabulary" data-list-mode="commas" rows="2">${esc((state.draft.content.vocabulary || []).join(", "))}</textarea></div>
+            </div></details>
+            <details><summary>Representation and access</summary><div class="designer-control-body">
+              <div class="form-field"><label for="diagram-type">Local diagram</label><select id="diagram-type" data-content-field="diagramType">${diagramTypes.map(type => `<option value="${type}" ${type === state.draft.content.diagramType ? "selected" : ""}>${type ? titleCase(type) : "No diagram"}</option>`).join("")}</select></div>
+              <div class="form-field"><label for="diagram-labels">Diagram labels <small>— comma separated</small></label><input id="diagram-labels" class="input" data-content-field="diagramLabels" data-list-mode="commas" value="${esc((state.draft.content.diagramLabels || []).join(", "))}"></div>
+              <div class="form-grid compact-fields"><div class="form-field"><label>Instruction language</label><select data-content-field="instructionMode">${DATA.build3.instructionModes.map(mode => `<option value="${mode}" ${mode === state.draft.content.instructionMode ? "selected" : ""}>${titleCase(mode)}</option>`).join("")}</select></div><div class="form-field"><label>Visual density</label><select data-content-field="density">${DATA.build3.densityModes.map(mode => `<option value="${mode}" ${mode === state.draft.content.density ? "selected" : ""}>${titleCase(mode)}</option>`).join("")}</select></div><div class="form-field"><label>Response space</label><select data-content-field="responseSpace"><option value="standard" ${state.draft.content.responseSpace === "standard" ? "selected" : ""}>Standard</option><option value="large" ${state.draft.content.responseSpace === "large" ? "selected" : ""}>Larger</option><option value="oral" ${state.draft.content.responseSpace === "oral" ? "selected" : ""}>Oral response</option></select></div><div class="form-field"><label>Classroom format</label><select data-draft-field="format">${DATA.printFormats.map(format => `<option value="${format.id}" ${format.id === state.draft.format ? "selected" : ""}>${esc(format.name)}</option>`).join("")}</select></div></div>
+              <label class="check-row"><input type="checkbox" data-content-toggle="oralRehearsal" ${state.draft.content.oralRehearsal ? "checked" : ""}><span>Add oral rehearsal</span></label>
+            </div></details>
+            <details><summary>Sections and teacher notes</summary><div class="designer-control-body">
+              <div class="section-switches">${[["example","Example"],["vocabulary","Vocabulary"],["oral","Oral rehearsal"]].map(([id,label]) => `<label><input type="checkbox" data-hidden-section="${id}" ${hidden.includes(id) ? "" : "checked"}><span>${label}</span></label>`).join("")}</div>
+              <div class="form-field"><label for="teacher-notes">Teacher notes</label><textarea id="teacher-notes" data-content-field="teacherNotes" rows="3">${esc(state.draft.content.teacherNotes || "")}</textarea></div>
+              <div class="form-field"><label for="tags">Library tags</label><input class="input" id="tags" data-draft-field="tags" value="${esc(state.draft.tags)}" placeholder="fractions, guided group, explanation"></div>
+            </div></details>
+            <div class="fade-explanation"><span>${esc(activeStage.name)} now</span><p>${esc(activeStage.description)}</p><strong>${esc(nextStage ? RESOURCE.nextFade(scaffold) : "The page is removed; one pupil-owned self-prompt remains.")}</strong></div>
+          </aside>
+          <section class="designer-preview-panel"><div class="preview-bar"><span>Live pupil preview</span><small>${esc(activeStage.name)} · ${esc(printFormatById(state.draft.format).name)}</small></div><div class="paper-wrap live-resource-preview" id="live-resource-preview">${renderResourceDocument(scaffold)}</div></section>
         </div>
-        <div class="fade-explanation"><span>${esc(activeStage.name)} now</span><p>${esc(activeStage.description)}</p><strong>${nextStage ? `Next: ${nextStage.name} removes another layer of external prompting.` : "The page is removed; the pupil keeps one internal self-prompt."}</strong></div>
-        <div class="design-fields">
-          <div class="form-field"><label for="scaffold-title">Resource title</label><input class="input" id="scaffold-title" data-draft-field="title" value="${esc(state.draft.title)}"></div>
-          <div class="form-grid">
-            <div class="form-field"><label for="vocabulary">High-leverage vocabulary</label><textarea id="vocabulary" data-draft-field="vocabulary" rows="3">${esc(vocabulary)}</textarea><span class="field-hint">Keep the list small enough to be used.</span></div>
-            <div class="form-field"><label for="misconception">Misconception to expose</label><textarea id="misconception" data-draft-field="misconception" rows="3">${esc(misconception)}</textarea><span class="field-hint">Expose this through a question or non-example; do not design around it invisibly.</span></div>
-          </div>
-          ${intelligence.representations.length ? `<div class="form-field"><label for="representation">Representation choice <small>— recommended for this subject idea</small></label><div class="select-wrap"><select id="representation" data-draft-field="representation"><option value="">No fixed representation</option>${intelligence.representations.map(item => `<option value="${esc(item.name)}" ${item.name === state.draft.representation ? "selected" : ""}>${esc(item.name)} — ${esc(item.use)}</option>`).join("")}</select></div><span class="field-hint">${esc(intelligence.representations.find(item => item.name === state.draft.representation)?.avoid || "Choose only if it reveals the intended relationship.")}</span></div>` : ""}
-          <div class="form-field"><label for="intention">Teacher intention</label><textarea id="intention" data-draft-field="intention" rows="3">${esc(state.draft.intention)}</textarea></div>
-          <div class="teacher-question-bank"><span class="form-label">Questions to use before another prompt</span>${intelligence.profile.questions.map(question => `<button class="question-chip" type="button" data-action="copy-question" data-question="${esc(question)}">${esc(question)}</button>`).join("")}</div>
-          <div class="form-field"><label for="tags">Library tags <small>— separated by commas</small></label><input class="input" id="tags" data-draft-field="tags" value="${esc(state.draft.tags)}" placeholder="fractions, guided group, explanation"></div>
-        </div>
-      </div>
-      ${stepFooter({ nextLabel: "Build and review", nextAction: "generate-scaffold" })}`;
+      </div>${stepFooter({ nextLabel: "Review quality", nextAction: "generate-scaffold" })}`;
   }
 
   function renderReviewStep() {
     const scaffold = state.activeScaffold || scaffoldFromDraft();
     const audit = qualityAudit(scaffold);
-    const overall = Math.round(audit.reduce((sum, item) => sum + item.score, 0) / audit.length);
-    return `${createHead(5, "Review the finished scaffold", "Check the support, the preserved thinking and the route towards independence before it reaches pupils.")}
+    const flagged = audit.filter(item => item.status !== "Strong");
+    const stageSet = RESOURCE.stageSet(scaffold);
+    return `${createHead(6, "Review the engineered scaffold", "Use professional judgements rather than a false effectiveness score. Correct anything that could weaken the learning.")}
       <div class="create-card-body">
         <div class="review-stage-switch"><div><span class="eyebrow">Move through the growth pathway</span><p>Preview the same learning with a different amount of external support.</p></div><div class="compact-stage-path">${DATA.stages.map(stage => `<button class="${stage.id === scaffold.stage ? "is-active" : ""}" data-action="choose-stage" data-id="${stage.id}"><span>${stage.glyph}</span>${esc(stage.name)}</button>`).join("")}</div></div>
-        <div class="preview-workspace">
-          <div class="paper-wrap">${renderResourceDocument({ ...scaffold, stage: state.draft.stage })}</div>
+        ${state.compareStages ? `<div class="stage-compare-grid">${DATA.stages.map(stage => `<section><div class="stage-compare-head"><strong>${stage.name}</strong><span>${stage.support}</span></div><div class="stage-mini-paper">${renderResourceDocument(stageSet[stage.id])}</div></section>`).join("")}</div>` : `<div class="preview-workspace">
+          <div class="paper-wrap">${renderResourceDocument({ ...scaffold, stage: state.draft.stage, content: state.draft.content })}</div>
           <aside class="preview-tools">
             <button class="button button-primary" data-action="save-scaffold"><span data-icon="check"></span> Save to library</button>
+            <button class="button" data-action="save-version"><span data-icon="copy"></span> Create checkpoint</button>
             <button class="button" data-action="open-print"><span data-icon="print"></span> Open Print Studio</button>
-            <button class="button" data-action="ai-prompt"><span data-icon="spark"></span> Enhance with AI</button>
+            <button class="button" data-action="toggle-stage-compare"><span data-icon="eye"></span> Compare four stages</button>
+            ${scaffold.id && state.library.some(item => item.id === scaffold.id) ? `<button class="button" data-action="record-fade" data-id="${esc(scaffold.id)}"><span data-icon="down"></span> Record move to ${esc(titleCase(state.draft.stage))}</button>` : ""}
             ${scaffold.id && state.library.some(item => item.id === scaffold.id) ? `<button class="button" data-action="record-use-reflection" data-id="${esc(scaffold.id)}"><span data-icon="brain"></span> Reflect after use</button>` : ""}
-            <div class="audit-panel audit-dashboard"><div class="audit-score"><strong>${overall}</strong><span>/ 100</span></div><div><h3>Scaffold quality</h3><p>Eight checks are run against the curriculum decision, barrier and fade.</p></div><button class="text-link" data-action="show-quality-report">Inspect report</button><div class="audit-mini-bars">${audit.map(item => `<span title="${esc(item.label)}: ${item.score}"><i style="width:${item.score}%"></i></span>`).join("")}</div></div>
+            <div class="audit-panel audit-dashboard audit-judgement"><span class="audit-symbol">${flagged.length ? "!" : "✓"}</span><div><h3>${flagged.length ? `${flagged.length} review point${flagged.length === 1 ? "" : "s"}` : "Strong professional audit"}</h3><p>${flagged.length ? esc(flagged[0].reason) : "No obvious barrier, ownership, representation or fading issue was found."}</p></div><button class="text-link" data-action="show-quality-report">Inspect 11 judgements</button></div>
           </aside>
-        </div>
+        </div>`}
       </div>
-      ${stepFooter({ nextLabel: "Edit design", nextAction: "edit-design", extra: '<button class="button button-ghost" data-action="start-again">Start a new scaffold</button>' })}`;
+      ${stepFooter({ nextLabel: "Print, save or export", nextAction: "create-next", extra: '<button class="button" data-action="edit-design">Edit design</button>' })}`;
+  }
+
+  function renderOutputStep() {
+    const scaffold = state.activeScaffold || scaffoldFromDraft();
+    const prompt = state.aiPromptEdit || createAIPrompt(scaffold, state.aiTask, state.aiMode);
+    const aiTask = DATA.aiTasks.find(item => item.id === state.aiTask) || DATA.aiTasks[0];
+    return `${createHead(7, "Use, save or enhance", "The local resource is complete. External AI is optional and receives only the professional brief you choose to copy.")}
+      <div class="create-card-body output-workspace">
+        <section class="output-actions"><div class="output-action-card"><span>${icon("check")}</span><div><h3>Save the classroom resource</h3><p>Create a deliberate local checkpoint with all four growth stages.</p></div><button class="button button-primary" data-action="save-scaffold">Save to library</button></div><div class="output-action-card"><span>${icon("print")}</span><div><h3>Print or make a mixed pack</h3><p>Convert the structure into ${DATA.printFormats.length} classroom formats.</p></div><button class="button" data-action="open-print">Open Print Studio 3</button></div></section>
+        <section class="ai-export-studio"><div class="ai-export-head"><div><span class="eyebrow">AI Companion 3 · nothing sent automatically</span><h3>Professional enhancement brief</h3><p>Keep the scaffold architecture and protected thinking fixed. Ask external AI for one bounded contribution.</p></div><div class="ai-mode-switch"><button class="${state.aiMode === "compact" ? "is-active" : ""}" data-action="ai-mode" data-id="compact">Compact</button><button class="${state.aiMode === "full" ? "is-active" : ""}" data-action="ai-mode" data-id="full">Full</button></div></div>
+          <div class="ai-task-row"><label for="ai-task">External AI task</label><select id="ai-task" data-ai-task>${DATA.aiTasks.map(item => `<option value="${item.id}" ${item.id === aiTask.id ? "selected" : ""}>${esc(item.name)}</option>`).join("")}</select><button class="button button-compact" data-action="reset-ai-prompt">Regenerate from scaffold</button></div>
+          <textarea id="ai-prompt-output" class="prompt-output prompt-workspace" data-ai-prompt-edit>${esc(prompt)}</textarea>
+          <div class="ai-export-actions"><span class="quiet-note">Inspect and edit every line before copying.</span><button class="button button-primary" data-action="copy-ai-prompt"><span data-icon="copy"></span> Copy ${esc(state.aiMode)} prompt</button></div>
+        </section>
+        <section class="controlled-import"><div><span class="eyebrow">Controlled content importer</span><h3>Bring useful text back safely</h3><p>Plain text only. Imported HTML and executable content are stripped before placement.</p></div><div class="import-grid"><select data-import-type><option value="vocabulary" ${state.importType === "vocabulary" ? "selected" : ""}>Vocabulary</option><option value="examples" ${state.importType === "examples" ? "selected" : ""}>Examples</option><option value="questions" ${state.importType === "questions" ? "selected" : ""}>Questions</option><option value="passage" ${state.importType === "passage" ? "selected" : ""}>Short passage</option><option value="scenarios" ${state.importType === "scenarios" ? "selected" : ""}>Scenario cards</option><option value="teacher-notes" ${state.importType === "teacher-notes" ? "selected" : ""}>Teacher notes</option></select><textarea id="controlled-import-text" rows="5" placeholder="Paste plain text here…"></textarea><button class="button" data-action="import-controlled-content">Sanitise and place into scaffold</button></div></section>
+      </div>${stepFooter({ nextLabel: "Start a new scaffold", nextAction: "start-again", extra: '<button class="button" data-action="edit-design">Return to designer</button>' })}`;
   }
 
   function scoreBarrierCandidates(draft = state.draft) {
@@ -610,14 +751,15 @@
     state.draft.recommendations = DATA.engines
       .map(engine => {
         const barrierScore = engine.barriers.reduce((total, id) => total + (chosen.includes(id) ? 4 : 0), 0);
-        const subjectScore = engine.subjects.includes("all") || engine.subjects.includes(subject) ? 3 : 0;
+        const subjectScore = engine.subjects.includes(subject) ? 7 : engine.subjects.includes("all") ? 3 : -40;
         const familyScore = intelligence.preferredFamilies.includes(engine.family) ? 3 : 0;
-        const phaseScore = state.draft.phase === "Teacher modelling" && engine.id === "worked-example" ? 3
+        const phaseScore = state.draft.phase === "Teacher modelling" && ["worked-example", "incomplete-example", "modelling-page"].includes(engine.id) ? 3
           : state.draft.phase === "Before the lesson" && engine.id === "vocabulary-preteach" ? 3
           : state.draft.phase === "Review and reflection" && engine.id === "metacognition-planner" ? 3
           : state.draft.phase === "Independent practice" && ["metacognition-planner", "reasoning-ladder"].includes(engine.id) ? 2 : 0;
         const practiceScore = successfulPractice.some(item => item.engineId === engine.id) ? 1 : 0;
-        return { id: engine.id, score: barrierScore + subjectScore + familyScore + phaseScore + practiceScore };
+        const profileScore = (engine.prompts || []).some(prompt => `${state.draft.objective} ${state.draft.situation}`.toLowerCase().includes(prompt.toLowerCase().split(" ")[0])) ? 1 : 0;
+        return { id: engine.id, score: barrierScore + subjectScore + familyScore + phaseScore + practiceScore + profileScore };
       })
       .sort((a, b) => b.score - a.score)
       .slice(0, 3)
@@ -650,13 +792,16 @@
       createdAt: existing?.createdAt || now,
       updatedAt: now,
       favourite: existing?.favourite || false,
+      archived: existing?.archived || false,
       year: state.draft.year,
       subject: state.draft.subject,
       topic: state.draft.topic,
       objective: state.draft.objective,
       phase: state.draft.phase,
       situation: state.draft.situation,
+      expectedOutcome: state.draft.expectedOutcome,
       barriers: [...state.draft.selectedBarriers],
+      customBarrier: state.draft.customBarrier,
       engineId: engine.id,
       familyId: engine.family,
       profileId: intelligence.profile.id,
@@ -665,6 +810,9 @@
       vocabulary: (state.draft.vocabulary || entry?.vocabulary.join(", ") || "").split(",").map(item => item.trim()).filter(Boolean).slice(0, 8),
       misconception: state.draft.misconception || entry?.misconceptions[0] || "",
       intention: state.draft.intention,
+      essentialThinking: state.draft.essentialThinking || protectedThinkingStatement(),
+      pupilAction: state.draft.pupilAction,
+      removalPathway: state.draft.removalPathway,
       representation: state.draft.representation || intelligence.representations[0]?.name || "",
       threshold: intelligence.profile.threshold,
       disciplinaryThinking: intelligence.profile.disciplinary,
@@ -673,7 +821,13 @@
       teacherQuestions: intelligence.profile.questions.slice(0, 3),
       assessmentOpportunities: intelligence.profile.assessment.slice(0, 3),
       tags: state.draft.tags.split(",").map(item => item.trim()).filter(Boolean).slice(0, 8),
-      reflection: existing?.reflection || null
+      content: { ...state.draft.content, vocabulary: state.draft.content?.vocabulary?.length ? state.draft.content.vocabulary : (state.draft.vocabulary || "").split(",").map(item => item.trim()).filter(Boolean), misconception: state.draft.content?.misconception || state.draft.misconception },
+      diagram: { ...state.draft.diagram, type: state.draft.content?.diagramType || state.draft.diagram?.type || "", labels: state.draft.content?.diagramLabels || state.draft.diagram?.labels || [] },
+      format: state.draft.format,
+      growthStages: [...state.draft.growthStages],
+      versions: existing?.versions || [],
+      reflection: existing?.reflection || null,
+      lastPrintedAt: existing?.lastPrintedAt || null
     };
   }
 
@@ -689,9 +843,12 @@
     const subject = subjectById(scaffold.subject);
     const engine = engineById(scaffold.engineId);
     const stage = DATA.stages.find(item => item.id === scaffold.stage) || DATA.stages[1];
-    return `<article class="paper" data-page="resource">
-      <div class="paper-brand">Scaffold Seeds · ${esc(engine.name)}</div>
-      <div class="resource-meta"><span>${esc(scaffold.year)}</span><span>${esc(subject.name)}</span><span>${esc(scaffold.topic)}</span><span>${esc(stage.name)} · ${esc(stage.support)}</span></div>
+    const teacherCode = `SS-${String.fromCharCode(65 + Math.max(0, DATA.stages.findIndex(item => item.id === stage.id)))}`;
+    const density = scaffold.content?.density || "calm";
+    const responseSpace = scaffold.content?.responseSpace || "standard";
+    return `<article class="paper density-${esc(density)} response-${esc(responseSpace)}" data-page="resource" data-stage="${esc(stage.id)}">
+      <div class="paper-brand">Scaffold Seeds · ${esc(engine.name)} <small>${teacherCode}</small></div>
+      <div class="resource-meta"><span>${esc(scaffold.year)}</span><span>${esc(subject.name)}</span><span>${esc(scaffold.topic)}</span></div>
       <h1>${esc(scaffold.title)}</h1>
       <p class="resource-objective"><strong>Learning focus:</strong> ${esc(scaffold.objective)}</p>
       <div class="resource-body">${body}</div>
@@ -700,24 +857,7 @@
   }
 
   function renderResourceDocument(scaffold) {
-    const renderers = {
-      "vocabulary-builder": renderVocabularyBuilder,
-      "vocabulary-network": renderVocabularyNetwork,
-      "inference-bridge": renderInferenceBridge,
-      "paragraph-planner": renderParagraphPlanner,
-      "sentence-ladder": renderSentenceLadder,
-      "worked-example": renderWorkedExample,
-      "representation-selector": renderRepresentationSelector,
-      "reasoning-ladder": renderReasoningLadder,
-      "observation-recorder": renderObservationRecorder,
-      "evidence-builder": renderEvidenceBuilder,
-      "chronology-builder": renderChronologyBuilder,
-      "comparison-organiser": renderComparisonOrganiser,
-      "algorithm-planner": renderAlgorithmPlanner,
-      "metacognition-planner": renderMetacognitionPlanner,
-      "vocabulary-preteach": renderVocabularyPreteach
-    };
-    const body = (renderers[scaffold.engineId] || renderReasoningLadder)(scaffold);
+    const body = RESOURCE.renderBody(scaffold);
     return resourceFrame(scaffold, body);
   }
 
@@ -850,49 +990,44 @@
   }
 
   function qualityAudit(scaffold) {
-    const entry = subjectById(scaffold.subject).entries.find(item => item.title === scaffold.topic && item.years.includes(scaffold.year));
-    const engine = engineById(scaffold.engineId);
-    const barriers = (scaffold.barriers || []).map(barrierById).filter(Boolean);
-    const vocabularyCount = (scaffold.vocabulary || []).length;
-    const hasPreciseObservation = (scaffold.situation || "").length >= 45 && /but|however|when|although|yet/i.test(scaffold.situation || "");
-    const aligned = entry?.objectives?.includes(scaffold.objective);
-    const stageIndex = DATA.stages.findIndex(stage => stage.id === scaffold.stage);
-    return [
-      { label: "Curriculum alignment", score: aligned ? 98 : entry ? 92 : 86, evidence: aligned ? "The objective is drawn directly from the selected England curriculum context." : "The editable objective remains anchored to the selected subject profile and disciplinary demand." },
-      { label: "Barrier precision", score: hasPreciseObservation ? 96 : (scaffold.situation || "").length >= 20 ? 88 : 76, evidence: hasPreciseObservation ? "The observation distinguishes current success from the point of breakdown." : "Add a clearer ‘can do / breaks down when’ distinction to sharpen the support." },
-      { label: "Challenge preserved", score: engine.preserves ? 96 : 89, evidence: engine.preserves || "The central subject decision remains with the pupil." },
-      { label: "Independence promoted", score: stageIndex >= 0 ? 94 : 82, evidence: `${titleCase(scaffold.stage)} has a defined next reduction and an independent end point.` },
-      { label: "Visual clarity", score: scaffold.representation ? 95 : 90, evidence: scaffold.representation ? `${scaffold.representation} is named as a purposeful representation choice.` : `${engine.name} uses a distinctive, consistent structure rather than a generic worksheet grid.` },
-      { label: "Cognitive load", score: vocabularyCount <= 6 ? 96 : vocabularyCount <= 8 ? 88 : 78, evidence: `${vocabularyCount || "A small set of"} high-leverage word${vocabularyCount === 1 ? " is" : "s are"} foregrounded; incidental directions remain short.` },
-      { label: "Print quality", score: 95, evidence: "The structure has fixed page geometry, greyscale support, large-print handling and photocopy-safe borders." },
-      { label: "Fade potential", score: barriers.length && stageIndex >= 0 ? 97 : 85, evidence: stageIndex < DATA.stages.length - 1 ? `The next version removes support towards ${DATA.stages[stageIndex + 1]?.name || "independence"} without changing the objective.` : "The external scaffold is removed and one pupil-owned self-prompt remains." }
-    ];
+    return RESOURCE.qualityAudit(scaffold);
   }
 
   function renderLibrary() {
     const filters = state.libraryFilters;
     const filtered = state.library
-      .filter(item => !filters.query || `${item.title} ${item.topic} ${item.objective} ${(item.tags || []).join(" ")}`.toLowerCase().includes(filters.query.toLowerCase()))
+      .filter(item => Boolean(item.archived) === Boolean(filters.archived))
+      .filter(item => !filters.query || `${item.title} ${item.topic} ${item.objective} ${item.situation} ${engineById(item.engineId).name} ${(item.tags || []).join(" ")}`.toLowerCase().includes(filters.query.toLowerCase()))
       .filter(item => filters.year === "all" || item.year === filters.year)
       .filter(item => filters.subject === "all" || item.subject === filters.subject)
+      .filter(item => filters.family === "all" || (item.familyId || engineById(item.engineId).family) === filters.family)
+      .filter(item => filters.format === "all" || item.format === filters.format)
+      .filter(item => filters.stage === "all" || (item.growthStages || [item.stage]).includes(filters.stage))
       .filter(item => !filters.favourite || item.favourite)
-      .sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
+      .sort((a, b) => filters.sort === "printed" ? new Date(b.lastPrintedAt || 0) - new Date(a.lastPrintedAt || 0) : filters.sort === "title" ? a.title.localeCompare(b.title) : new Date(b.updatedAt) - new Date(a.updatedAt));
     const cards = filtered.map(item => `
       <article class="library-card">
         <div class="library-thumb"><div class="mini-paper"></div><button class="favourite-button ${item.favourite ? "is-active" : ""}" data-action="toggle-favourite" data-id="${esc(item.id)}" aria-label="${item.favourite ? "Remove from" : "Add to"} favourites" aria-pressed="${item.favourite}">${icon("heart")}</button></div>
-        <div class="library-card-body"><h3 title="${esc(item.title)}">${esc(item.title)}</h3><p>${esc(item.year)} · ${esc(subjectById(item.subject).name)} · ${esc(engineById(item.engineId).name)}</p><div class="tag-row"><span class="tag">${esc(titleCase(item.stage))}</span>${item.reflection ? '<span class="tag tag-reflected">Reflected</span>' : ""}${(item.tags || []).slice(0, 2).map(tag => `<span class="tag">${esc(tag)}</span>`).join("")}</div>
-          <div class="card-actions"><button class="button" data-action="open-scaffold" data-id="${esc(item.id)}"><span data-icon="eye"></span> Open</button><button class="icon-button" data-action="record-use-reflection" data-id="${esc(item.id)}" aria-label="Reflect after using ${esc(item.title)}">${icon("brain")}</button><button class="icon-button" data-action="duplicate-scaffold" data-id="${esc(item.id)}" aria-label="Duplicate ${esc(item.title)}">${icon("copy")}</button><button class="icon-button" data-action="delete-scaffold" data-id="${esc(item.id)}" aria-label="Delete ${esc(item.title)}">${icon("trash")}</button></div>
+        <div class="library-card-body"><div class="library-card-title"><h3 title="${esc(item.title)}">${esc(item.title)}</h3><button class="text-link" data-action="rename-scaffold" data-id="${esc(item.id)}">Rename</button></div><p>${esc(item.year)} · ${esc(subjectById(item.subject).name)} · ${esc(engineById(item.engineId).name)}</p>
+          <dl class="library-facts"><div><dt>Sticking point</dt><dd>${esc((item.customBarrier || item.situation || "Not recorded").slice(0, 110))}</dd></div><div><dt>Growth pathway</dt><dd>${esc((item.growthStages || DATA.stages.map(stage => stage.id)).map(titleCase).join(" · "))}</dd></div><div><dt>Formats</dt><dd>${esc(printFormatById(item.format || "workpage").name)} · ${esc((engineById(item.engineId).formats || []).slice(0, 2).map(id => printFormatById(id).name).join(" · "))}</dd></div></dl>
+          <div class="tag-row"><span class="tag">Edited ${relativeDate(item.updatedAt)}</span>${item.reflection ? '<span class="tag tag-reflected">Reflected</span>' : ""}${item.versions?.length ? `<span class="tag">${item.versions.length} version${item.versions.length === 1 ? "" : "s"}</span>` : ""}${(item.tags || []).slice(0, 2).map(tag => `<span class="tag">${esc(tag)}</span>`).join("")}</div>
+          <div class="card-actions"><button class="button" data-action="open-scaffold" data-id="${esc(item.id)}"><span data-icon="eye"></span> Open</button><button class="icon-button" data-action="show-versions" data-id="${esc(item.id)}" aria-label="View version history for ${esc(item.title)}">${icon("copy")}</button><button class="icon-button" data-action="record-use-reflection" data-id="${esc(item.id)}" aria-label="Reflect after using ${esc(item.title)}">${icon("brain")}</button><button class="icon-button" data-action="duplicate-scaffold" data-id="${esc(item.id)}" aria-label="Duplicate ${esc(item.title)}">${icon("plus")}</button><button class="icon-button" data-action="${item.archived ? "restore-scaffold" : "archive-scaffold"}" data-id="${esc(item.id)}" aria-label="${item.archived ? "Restore" : "Archive"} ${esc(item.title)}">${item.archived ? icon("upload") : icon("download")}</button>${item.archived ? `<button class="icon-button" data-action="delete-scaffold" data-id="${esc(item.id)}" aria-label="Permanently delete ${esc(item.title)}">${icon("trash")}</button>` : ""}</div>
         </div>
       </article>`).join("");
     return `
-      <div class="page-heading"><div><span class="eyebrow">Saved on this device</span><h2>Your scaffold library</h2><p>Edit, duplicate and revisit support as pupils grow. A useful scaffold is a living classroom decision, not a finished worksheet.</p></div><button class="button button-primary" data-action="new-scaffold"><span data-icon="plus"></span> New scaffold</button></div>
-      <div class="toolbar">
+      <div class="page-heading"><div><span class="eyebrow">Saved on this device · Build 3</span><h2>${filters.archived ? "Archived scaffolds" : "Your scaffold library"}</h2><p>Search the learning decision, not a filename. Reuse, reflect, restore and deliberately checkpoint meaningful versions.</p></div><button class="button button-primary" data-action="new-scaffold"><span data-icon="plus"></span> New scaffold</button></div>
+      <div class="library-view-tabs"><button class="${!filters.archived ? "is-active" : ""}" data-action="library-view" data-id="active">Current <span>${state.library.filter(item => !item.archived).length}</span></button><button class="${filters.archived ? "is-active" : ""}" data-action="library-view" data-id="archived">Archive <span>${state.library.filter(item => item.archived).length}</span></button></div>
+      <div class="toolbar library-toolbar">
         <label class="search-field"><span data-icon="search"></span><input class="input" id="library-search" data-library-filter="query" value="${esc(filters.query)}" placeholder="Search titles, objectives or tags"><span class="visually-hidden"></span></label>
         <select data-library-filter="year" aria-label="Filter by year"><option value="all">All years</option>${DATA.years.map(year => `<option ${year === filters.year ? "selected" : ""}>${esc(year)}</option>`).join("")}</select>
         <select data-library-filter="subject" aria-label="Filter by subject"><option value="all">All subjects</option>${DATA.subjects.map(subject => `<option value="${subject.id}" ${subject.id === filters.subject ? "selected" : ""}>${esc(subject.name)}</option>`).join("")}</select>
+        <select data-library-filter="family" aria-label="Filter by scaffold family"><option value="all">All families</option>${DATA.scaffoldFamilies.map(family => `<option value="${family.id}" ${family.id === filters.family ? "selected" : ""}>${esc(family.name)}</option>`).join("")}</select>
+        <select data-library-filter="format" aria-label="Filter by classroom format"><option value="all">All formats</option>${DATA.printFormats.map(format => `<option value="${format.id}" ${format.id === filters.format ? "selected" : ""}>${esc(format.name)}</option>`).join("")}</select>
+        <select data-library-filter="stage" aria-label="Filter by growth stage"><option value="all">All growth stages</option>${DATA.stages.map(stage => `<option value="${stage.id}" ${stage.id === filters.stage ? "selected" : ""}>${esc(stage.name)}</option>`).join("")}</select>
+        <select data-library-filter="sort" aria-label="Sort library"><option value="edited" ${filters.sort === "edited" ? "selected" : ""}>Recently edited</option><option value="printed" ${filters.sort === "printed" ? "selected" : ""}>Recently printed</option><option value="title" ${filters.sort === "title" ? "selected" : ""}>Title</option></select>
         <button class="button ${filters.favourite ? "button-soft" : ""}" data-action="filter-favourites" aria-pressed="${filters.favourite}">${icon("heart")} Favourites</button>
       </div>
-      ${state.library.length === 0 ? `<div class="empty-help"><span class="empty-mark">${icon("library")}</span><h4>A library built from real needs</h4><p>Your saved scaffolds will appear here with their year, subject, engine, fading stage and tags. Begin with one current pupil barrier.</p><button class="button button-primary" data-action="new-scaffold">Create a scaffold</button></div>` : filtered.length ? `<div class="library-grid">${cards}</div>` : `<div class="empty-help"><span class="empty-mark">${icon("search")}</span><h4>No scaffolds match these filters</h4><p>Clear one filter to widen the view. Nothing in your library has been removed.</p><button class="button" data-action="clear-library-filters">Clear filters</button></div>`}`;
+      ${state.library.length === 0 ? `<div class="empty-help"><span class="empty-mark">${icon("library")}</span><h4>A library built from real needs</h4><p>Your saved scaffolds will show objective, barrier, engine, fading stages, formats and intentional versions.</p><button class="button button-primary" data-action="new-scaffold">Create a scaffold</button></div>` : filtered.length ? `<div class="library-grid">${cards}</div>` : `<div class="empty-help"><span class="empty-mark">${icon("search")}</span><h4>No scaffolds match this view</h4><p>Clear one filter to widen the view. Nothing has been removed.</p><button class="button" data-action="clear-library-filters">Clear filters</button></div>`}`;
   }
 
   function renderKnowledge() {
@@ -902,7 +1037,7 @@
     const profile = brain.profiles.find(item => item.id === state.knowledgeProfile) || brain.profiles[0];
     const lensLabels = { ideas: "Subject architecture", progression: "Small steps", misconceptions: "Misconceptions", toolkit: "Teacher toolkit" };
     return `
-      <div class="page-heading"><div><span class="eyebrow">Built for England · Build 2 curriculum brain</span><h2>Knowledge Studio</h2><p>Browse the subject thinking used inside every recommendation: big ideas, progression, misconceptions, representations and teacher decisions.</p></div></div>
+      <div class="page-heading"><div><span class="eyebrow">Built for England · Build 3 curriculum engineering</span><h2>Knowledge Studio</h2><p>Browse the subject thinking used inside every recommendation: big ideas, progression, misconceptions, representations and teacher decisions.</p></div></div>
       <div class="knowledge-layout">
         <div class="knowledge-nav"><div class="subject-tabs" role="tablist" aria-label="Subjects">${DATA.subjects.map(item => `<button class="subject-tab ${item.id === subject.id ? "is-active" : ""}" style="--subject-colour:${item.colour}" role="tab" aria-selected="${item.id === subject.id}" data-action="knowledge-subject" data-id="${item.id}">${esc(item.name)}</button>`).join("")}</div><div class="profile-list"><span class="eyebrow">Subject lenses</span>${brain.profiles.map(item => `<button class="profile-button ${item.id === profile.id ? "is-active" : ""}" data-action="knowledge-profile" data-id="${item.id}"><span></span>${esc(item.name)}</button>`).join("")}</div></div>
         <section class="knowledge-content" style="--subject-colour:${subject.colour}">
@@ -944,12 +1079,12 @@
   }
 
   function paperClasses() {
-    return [state.print.paper === "a5" ? "a5" : "", state.print.orientation === "landscape" ? "landscape" : "", state.print.colour === "greyscale" ? "greyscale" : "", state.print.photocopy ? "photocopy" : "", state.print.largePrint ? "large-print" : "", state.print.answers ? "" : "hide-answers"].filter(Boolean).join(" ");
+    return [state.print.paper === "a5" ? "a5" : "", state.print.orientation === "landscape" ? "landscape" : "", `ink-${state.print.colour}`, state.print.colour === "greyscale" ? "greyscale" : "", state.print.photocopy ? "photocopy" : "", state.print.largePrint ? "large-print" : "", state.print.cropMarks ? "crop-marks" : "", state.print.cutLines ? "show-cut-lines" : "hide-cut-lines", state.settings.pageNumbers ? "page-numbers" : "", state.print.answers ? "" : "hide-answers"].filter(Boolean).join(" ");
   }
 
   function applyPaperOptions(html) {
     const classes = paperClasses();
-    return html.replace('class="paper"', `class="paper ${classes}"`);
+    return html.replace(/class="paper(?=[\s"])/, `class="paper ${classes}`);
   }
 
   function printPromptSet(scaffold) {
@@ -966,19 +1101,35 @@
       questions,
       selfPrompt: questions[0] || "What matters here, and how will I check it?",
       misconception: scaffold.misconception || intelligence.misconceptions[0],
-      vocabulary: (scaffold.vocabulary || intelligence.vocabulary).slice(0, 6)
+      vocabulary: (scaffold.content?.vocabulary?.length ? scaffold.content.vocabulary : scaffold.vocabulary || intelligence.vocabulary).slice(0, 6)
     };
   }
 
   function formatPage(scaffold, format, body, className = "") {
     const subject = subjectById(scaffold.subject);
-    const stage = DATA.stages.find(item => item.id === scaffold.stage) || DATA.stages[1];
-    return `<article class="paper format-page format-${format.id} ${className}" data-page="resource"><div class="paper-brand">Scaffold Seeds · ${esc(format.name)}</div><div class="resource-meta"><span>${esc(scaffold.year)}</span><span>${esc(subject.name)}</span><span>${esc(stage.name)} · ${esc(stage.support)}</span></div>${body}<footer class="resource-footer"><span>${esc(scaffold.topic)}</span><span>Designed to fade</span></footer></article>`;
+    const stageIndex = Math.max(0, DATA.stages.findIndex(item => item.id === scaffold.stage));
+    return `<article class="paper format-page format-${format.id} ${className}" data-page="resource" data-stage="${esc(scaffold.stage)}"><div class="paper-brand">Scaffold Seeds · ${esc(format.name)} <small>SS-${String.fromCharCode(65 + stageIndex)}</small></div><div class="resource-meta"><span>${esc(scaffold.year)}</span><span>${esc(subject.name)}</span></div>${body}<footer class="resource-footer"><span>${esc(scaffold.topic)}</span><span>Designed to fade</span></footer></article>`;
+  }
+
+  function renderCompactWorkpage(scaffold) {
+    const format = printFormatById();
+    const prompts = printPromptSet(scaffold);
+    const content = RESOURCE.normalise(scaffold).content;
+    const independent = scaffold.stage === "independent";
+    const promptLimit = state.print.paper === "a5" ? 3 : 4;
+    const visiblePrompts = content.prompts.slice(0, promptLimit);
+    const diagram = content.diagramType && !independent ? `<div class="compact-sheet-diagram">${RESOURCE.renderDiagram(content.diagramType, scaffold.diagram || { labels: content.diagramLabels })}</div>` : "";
+    const example = !independent && ["seed", "sprout"].includes(scaffold.stage) && !content.hiddenSections.includes("example") ? `<section class="compact-sheet-example"><span>${scaffold.stage === "seed" ? "Model one decision" : "Complete the missing decision"}</span><p>${esc(content.example)}</p></section>` : "";
+    const oral = !independent && content.oralRehearsal && !content.hiddenSections.includes("oral") ? `<p class="compact-oral"><strong>Say first:</strong> ${esc(content.oralPrompt)}</p>` : "";
+    const body = independent
+      ? `<div class="compact-sheet-title"><span class="independence-mark">Support removed</span><h1>${esc(scaffold.title)}</h1><p>${esc(scaffold.objective)}</p></div><section class="compact-independence"><h2>Before you begin</h2><p>${esc(content.independencePrompt)}</p><h2>Afterwards</h2><p>What did you decide for yourself? What evidence shows the learning?</p>${blankLines(state.print.paper === "a5" ? 4 : 3)}</section>`
+      : `<div class="compact-sheet-title"><span class="eyebrow">${esc(engineById(scaffold.engineId).name)}</span><h1>${esc(scaffold.title)}</h1><p>${esc(scaffold.objective)}</p></div><div class="compact-sheet-instruction"><strong>${esc(content.instruction)}</strong><small>${esc(content.vocabulary.slice(0, 4).join(" · "))}</small></div>${example}${diagram}<div class="compact-prompt-grid">${visiblePrompts.map((prompt, index) => `<section><span>${String(index + 1).padStart(2, "0")}</span><strong>${esc(prompt)}</strong>${blankLines(1)}</section>`).join("")}</div>${oral}<section class="compact-sheet-check"><strong>Independence check</strong><p>${esc(content.checkPrompt || prompts.selfPrompt)}</p></section>`;
+    return formatPage(scaffold, format, body, "compact-workpage");
   }
 
   function renderFormatDocument(scaffold) {
     const format = printFormatById();
-    if (format.id === "workpage") return renderResourceDocument(scaffold);
+    if (format.id === "workpage") return state.print.paper === "a5" || state.print.orientation === "landscape" ? renderCompactWorkpage(scaffold) : renderResourceDocument(scaffold);
     const prompts = printPromptSet(scaffold);
     const title = `<div class="format-title"><span class="eyebrow">${esc(engineById(scaffold.engineId).name)}</span><h1>${esc(scaffold.title)}</h1><p>${esc(scaffold.objective)}</p></div>`;
     const cards = prompts.steps.length ? prompts.steps : [prompts.selfPrompt];
@@ -1009,12 +1160,33 @@
       return formatPage(scaffold, format, `${title}<div class="group-workspace"><section class="group-roles"><h2>Roles that protect the thinking</h2><div><span>Noticer</span><span>Connector</span><span>Challenger</span><span>Checker</span></div></section><section class="group-focus"><h2>Shared focus</h2><p>${esc(cards[0])}</p><div class="wipe-space"></div></section><section class="group-conclusion"><h2>Our reasoned conclusion</h2><p>${esc(prompts.selfPrompt)}</p>${blankLines(5)}</section></div>`);
     }
     if (format.id === "display-poster") {
-      return formatPage(scaffold, format, `<div class="poster-layout"><span class="eyebrow">${esc(subjectById(scaffold.subject).name)} thinking</span><h1>${esc(scaffold.title)}</h1><p class="poster-question">${esc(prompts.selfPrompt)}</p><div class="poster-steps">${cards.slice(0, 4).map((item, index) => `<section><span>${index + 1}</span><strong>${esc(item)}</strong></section>`).join("")}</div><div class="poster-release">When you can prompt yourself, let the scaffold go.</div></div>`);
+      const poster = `<div class="poster-layout"><span class="eyebrow">${esc(subjectById(scaffold.subject).name)} thinking</span><h1>${esc(scaffold.title)}</h1><p class="poster-question">${esc(prompts.selfPrompt)}</p><div class="poster-steps">${cards.slice(0, 4).map((item, index) => `<section><span>${index + 1}</span><strong>${esc(item)}</strong></section>`).join("")}</div><div class="poster-release">When you can prompt yourself, let the scaffold go.</div></div>`;
+      return formatPage(scaffold, format, scaffold.printTile !== undefined ? `<div class="poster-tile-window tile-${scaffold.printTile}"><div class="poster-tile-canvas">${poster}</div></div><p class="tile-note">Tile ${scaffold.printTile + 1} of 4 · trim and align matching edges</p>` : poster);
     }
     if (format.id === "foldable") {
       const panels = [["Open", cards[0]], ["Connect", cards[1] || prompts.questions[0]], ["Check", prompts.selfPrompt], ["Fold away", "Name the one prompt you will keep in your head."]];
       return formatPage(scaffold, format, `${title}<div class="foldable-panels">${panels.map(([label, item], index) => `<section><span class="card-seed">${index + 1} · ${esc(label)}</span><h2>${esc(item)}</h2><div class="fold-write"></div></section>`).join("")}</div><p class="cut-note">Cut around the outer edge · fold on the dotted vertical lines</p>`);
     }
+    if (format.id === "a5-sheet") return renderCompactWorkpage(scaffold);
+    if (format.id === "cut-cards") {
+      const count = [4, 6, 8].includes(Number(state.print.arrangement)) ? Number(state.print.arrangement) : 6;
+      const items = [...cards, ...prompts.questions, prompts.selfPrompt, "What can I now do without this card?"].slice(0, count);
+      return formatPage(scaffold, format, `${title}<div class="cut-card-grid cards-${count}">${items.map((item, index) => `<section><span>${String(index + 1).padStart(2, "0")}</span><strong>${esc(item)}</strong><small>${esc(prompts.vocabulary[index % Math.max(1, prompts.vocabulary.length)] || scaffold.topic)}</small></section>`).join("")}</div><p class="cut-note">Cut on dashed lines · teacher code is discreetly printed in the footer</p>`);
+    }
+    if (format.id === "mini-booklet") {
+      const pages = [["Begin", cards[0]], ["Connect", cards[1] || prompts.questions[0]], ["Check", prompts.selfPrompt], ["Fade", "Name the prompt you can now keep without the booklet."]];
+      return formatPage(scaffold, format, `${title}<div class="booklet-grid">${pages.map(([label,item], index) => `<section><span>${index + 1} · ${esc(label)}</span><h2>${esc(item)}</h2>${blankLines(3)}</section>`).join("")}</div><p class="cut-note">Print duplex · flip on short edge · fold and staple on centre line</p>`);
+    }
+    if (["modelling-page", "presentation-board"].includes(format.id)) {
+      return formatPage(scaffold, format, `<div class="modelling-layout"><span class="eyebrow">${esc(format.id === "presentation-board" ? "Classroom board" : "Teacher modelling")}</span><h1>${esc(scaffold.title)}</h1><p>${esc(scaffold.objective)}</p><div class="modelling-focus"><strong>${esc(cards[0])}</strong><span>${esc(cards[1] || prompts.questions[0])}</span></div><div class="modelling-reveal"><small>Reveal next</small><strong>${esc(prompts.selfPrompt)}</strong></div></div>`);
+    }
+    if (format.id === "intervention-pack") {
+      return formatPage(scaffold, format, `${title}<div class="intervention-overview"><section><h2>Introduce</h2><p>Model one decision aloud. Do not complete the final decision required in the task.</p></section><section><h2>Use</h2><p>${esc(cards[0])}</p>${blankLines(3)}</section><section><h2>Check independence</h2><p>${esc(prompts.selfPrompt)}</p>${blankLines(2)}</section><section><h2>Reduce next</h2><p>${esc(RESOURCE.nextFade(scaffold))}</p></section></div>`);
+    }
+    if (format.id === "home-support") {
+      return formatPage(scaffold, format, `${title}<div class="home-support-grid"><section><h2>For the pupil</h2><p>${esc(cards[0])}</p><p>${esc(prompts.selfPrompt)}</p>${blankLines(4)}</section><section><h2>For an adult helping</h2><p>Ask the prompt, wait, and return the decision to the pupil. Do not supply the answer.</p><p><strong>Useful language:</strong> ${esc(prompts.vocabulary.join(" · "))}</p><p><strong>Stop using this page when:</strong> the pupil can name and use their own next prompt.</p></section></div>`);
+    }
+    if (format.id === "mixed-pack") return state.print.paper === "a5" || state.print.orientation === "landscape" ? renderCompactWorkpage(scaffold) : renderResourceDocument(scaffold);
     return renderResourceDocument(scaffold);
   }
 
@@ -1026,19 +1198,31 @@
     const intelligence = curriculumIntelligence(scaffold);
     const questions = scaffold.teacherQuestions?.length ? scaffold.teacherQuestions : intelligence.profile.questions;
     const assessments = scaffold.assessmentOpportunities?.length ? scaffold.assessmentOpportunities : intelligence.profile.assessment;
+    const engine = engineById(scaffold.engineId);
+    if (state.print.paper === "a5" || state.print.orientation === "landscape") {
+      return `<article class="paper teacher-page compact-teacher-guide ${paperClasses()}" data-page="teacher"><div class="paper-brand">Scaffold Seeds · Teacher guidance</div><div class="resource-meta"><span>${esc(scaffold.year)}</span><span>${esc(subjectById(scaffold.subject).name)}</span><span>${esc(engine.name)}</span></div><h1>Use, notice, reduce</h1><p class="resource-objective"><strong>${esc(scaffold.title)}</strong> · ${esc(scaffold.objective)}</p><div class="compact-guide-grid">
+        <section><h3>Purpose and barrier</h3><p>${esc(scaffold.situation)}</p><p><strong>Keep with pupils:</strong> ${esc(scaffold.essentialThinking || scaffold.disciplinaryThinking || intelligence.profile.disciplinary)}</p></section>
+        <section><h3>Introduce briefly</h3><p>Model one decision aloud, then complete only one example together. Do not model the final ${esc(engine.preserves || "decision")} required in the task.</p></section>
+        <section><h3>Notice and avoid</h3><p><strong>Listen for:</strong> ${esc(scaffold.misconception || "an insecure underlying connection")}</p><p><strong>Misuse:</strong> ${esc(engine.risk || "too many prompts may supply the next decision")}</p></section>
+        <section><h3>Check and fade</h3><p>${esc(assessments[0] || "Cover one prompt and inspect whether the core decision survives.")}</p><p><strong>Next:</strong> ${esc(RESOURCE.nextFade(scaffold))}</p></section>
+      </div><footer class="resource-footer"><span>Teacher copy</span><span>Remove the barrier · preserve the challenge</span></footer></article>`;
+    }
     return `<article class="paper teacher-page ${paperClasses()}" data-page="teacher"><div class="paper-brand">Scaffold Seeds · Teacher guidance</div><div class="resource-meta"><span>${esc(scaffold.year)}</span><span>${esc(subjectById(scaffold.subject).name)}</span><span>${esc(engineById(scaffold.engineId).name)}</span></div><h1>Using this scaffold well</h1><p class="resource-objective"><strong>${esc(scaffold.title)}</strong> · ${esc(scaffold.objective)}</p><div class="teacher-guide-grid">
       <section class="guide-block"><h3>Observed barrier</h3><p>${esc(scaffold.situation)}</p><ul>${barriers.map(barrier => `<li><strong>${esc(barrier.name)}:</strong> ${esc(barrier.hint)}</li>`).join("")}</ul></section>
-      <section class="guide-block"><h3>Subject thinking to preserve</h3><p>${esc(scaffold.disciplinaryThinking || intelligence.profile.disciplinary)}</p><p><strong>Threshold:</strong> ${esc(scaffold.threshold || intelligence.profile.threshold)}</p></section>
+      <section class="guide-block"><h3>Subject thinking to preserve</h3><p>${esc(scaffold.essentialThinking || scaffold.disciplinaryThinking || intelligence.profile.disciplinary)}</p><p><strong>Threshold:</strong> ${esc(scaffold.threshold || intelligence.profile.threshold)}</p></section>
+      <section class="guide-block"><h3>Introduce it briefly</h3><p>Model one decision aloud. Show how to use the first prompt, then complete only one example together. Do not model the final ${esc(engine.preserves || "decision")} required in the independent task.</p></section>
       <section class="guide-block"><h3>Watch and listen for</h3><p>${esc(scaffold.misconception || "Listen for language or actions that reveal an insecure underlying connection.")}</p><p><strong>Useful language:</strong> ${esc((scaffold.vocabulary || []).join(", "))}</p><p><strong>Representation:</strong> ${esc(scaffold.representation || "Use only if it reveals the intended relationship.")}</p></section>
-      <section class="guide-block"><h3>Plan the fade</h3><p><strong>Current:</strong> ${esc(stage.name)} · ${esc(stage.description)}</p><p><strong>Next:</strong> ${nextStage ? `${esc(nextStage.name)} · ${esc(nextStage.description)}` : "Ask the pupil to name the self-prompt they will keep when the page is removed."}</p></section>
+      <section class="guide-block"><h3>Plan the fade</h3><p><strong>Current:</strong> ${esc(stage.name)} · ${esc(stage.description)}</p><p><strong>Next:</strong> ${esc(RESOURCE.nextFade(scaffold))}</p></section>
       <section class="guide-block"><h3>In-the-moment questions</h3><ul>${questions.map(item => `<li>${esc(item)}</li>`).join("")}</ul><p><strong>Preserve:</strong> ${esc(engineById(scaffold.engineId).preserves)}</p></section>
-      <section class="guide-block"><h3>Assessment and after-use note</h3><ul>${assessments.map(item => `<li>${esc(item)}</li>`).join("")}</ul><p>What changed once support became lighter?</p>${blankLines(3)}</section>
+      <section class="guide-block"><h3>Misuse warning</h3><p>${esc(engine.risk || "Too many prompts may increase cognitive load or supply the next decision.")}</p><p><strong>Common misuse:</strong> keeping the scaffold after pupils can self-prompt.</p></section>
+      <section class="guide-block"><h3>Evidence and independence</h3><ul>${assessments.slice(0,2).map(item => `<li>${esc(item)}</li>`).join("")}</ul><p><strong>Listen for:</strong> the pupil choosing the next subject move without an adult cue.</p><p><strong>Inspect:</strong> whether the core decision survives when one support is covered.</p></section>
     </div><footer class="resource-footer"><span>Teacher copy</span><span>Remove the barrier · preserve the challenge</span></footer></article>`;
   }
 
-  function renderPrintPage(scaffold, type, index) {
+  function renderPrintPage(scaffold, type, index, options = {}) {
     const html = type === "resource" ? applyPaperOptions(renderFormatDocument(scaffold)) : renderTeacherGuide(scaffold);
-    return `<div class="page-shell"><div class="page-controls"><span>Page ${index + 1} · ${type === "resource" ? esc(printFormatById().name) : "Teacher guidance"}</span><div><button data-action="move-page" data-id="${type}" data-direction="up" aria-label="Move page up">${icon("up")}</button><button data-action="move-page" data-id="${type}" data-direction="down" aria-label="Move page down">${icon("down")}</button></div></div>${html}</div>`;
+    const stageControls = type === "resource" && options.allowStageMove ? `<div><button data-action="move-print-stage" data-id="${scaffold.stage}" data-direction="up" aria-label="Move ${esc(scaffold.stage)} page earlier" ${options.first ? "disabled" : ""}>${icon("up")}</button><button data-action="move-print-stage" data-id="${scaffold.stage}" data-direction="down" aria-label="Move ${esc(scaffold.stage)} page later" ${options.last ? "disabled" : ""}>${icon("down")}</button></div>` : "";
+    return `<div class="page-shell"><div class="page-controls"><span>Page ${index + 1} · ${type === "resource" ? esc(printFormatById().name) : "Teacher guidance"}</span>${stageControls}</div>${html}</div>`;
   }
 
   function renderPrintStudio() {
@@ -1046,17 +1230,29 @@
     if (!scaffold) {
       return `<div class="page-heading"><div><span class="eyebrow">Classroom-ready output</span><h2>Print Studio</h2><p>Control the pupil page and teacher guidance before printing.</p></div></div><div class="empty-help"><span class="empty-mark">${icon("print")}</span><h4>Bring a scaffold here when it is ready</h4><p>Create a scaffold first. Print Studio will then manage paper size, orientation, colour, answers and page order intentionally.</p><button class="button button-primary" data-action="new-scaffold">Create a scaffold</button></div>`;
     }
-    const order = state.print.pageOrder.filter(type => type !== "teacher" || state.print.teacherGuidance);
     const format = printFormatById();
+    const stageIds = format.id === "mixed-pack" ? DATA.stages.map(stage => stage.id) : (state.print.stages.length ? state.print.stages : [scaffold.stage]);
+    const stageScaffolds = stageIds.map(stage => RESOURCE.createStage(scaffold, stage));
+    const tiledScaffolds = format.id === "display-poster" && state.print.arrangement === "2x2" ? stageScaffolds.flatMap(item => [0,1,2,3].map(tile => ({ ...item, printTile: tile }))) : stageScaffolds;
+    const pages = tiledScaffolds.map(item => ({ type: "resource", scaffold: item }));
+    if (state.print.teacherGuidance) pages.push({ type: "teacher", scaffold });
     return `<div class="page-heading"><div><span class="eyebrow">Classroom-ready output</span><h2>Print Studio</h2><p>Preview exactly what will print. Reorder pages, simplify presentation and separate pupil material from teacher guidance.</p></div></div>
       <div class="studio-layout"><aside class="studio-controls"><h3>Print choices</h3>
         <div class="control-group format-control"><h4>Classroom format</h4><button class="format-current" data-action="choose-print-format"><span>${esc(format.group)}</span><strong>${esc(format.name)}</strong><small>${esc(format.note)}</small></button></div>
         <div class="control-group"><h4>Paper size</h4><div class="segmented">${["a4","a5"].map(value => `<button class="${state.print.paper === value ? "is-active" : ""}" data-print-option="paper" data-value="${value}">${value.toUpperCase()}</button>`).join("")}</div></div>
         <div class="control-group"><h4>Orientation</h4><div class="segmented">${["portrait","landscape"].map(value => `<button class="${state.print.orientation === value ? "is-active" : ""}" data-print-option="orientation" data-value="${value}">${titleCase(value)}</button>`).join("")}</div></div>
-        <div class="control-group"><h4>Ink</h4><div class="segmented">${["colour","greyscale"].map(value => `<button class="${state.print.colour === value ? "is-active" : ""}" data-print-option="colour" data-value="${value}">${titleCase(value)}</button>`).join("")}</div></div>
-        <div class="control-group"><div class="switch-row"><span>Teacher guidance</span><button class="switch" role="switch" aria-checked="${state.print.teacherGuidance}" data-print-toggle="teacherGuidance"></button></div><div class="switch-row"><span>Model answers</span><button class="switch" role="switch" aria-checked="${state.print.answers}" data-print-toggle="answers"></button></div><div class="switch-row"><span>Large print</span><button class="switch" role="switch" aria-checked="${state.print.largePrint}" data-print-toggle="largePrint"></button></div><div class="switch-row"><span>Photocopy-friendly</span><button class="switch" role="switch" aria-checked="${state.print.photocopy}" data-print-toggle="photocopy"></button></div></div>
-        <button class="button button-primary" data-action="print-now"><span data-icon="print"></span> Print ${order.length} page${order.length === 1 ? "" : "s"}</button>
-      </aside><div class="page-stack">${order.map((type, index) => renderPrintPage(scaffold, type, index)).join("")}</div></div>`;
+        <div class="control-group"><h4>Ink and photocopy</h4><div class="ink-options">${DATA.build3.printModes.map(value => `<button class="${state.print.colour === value ? "is-active" : ""}" data-print-option="colour" data-value="${value}">${titleCase(value)}</button>`).join("")}</div></div>
+        ${["cut-cards","mini-card"].includes(format.id) ? `<div class="control-group"><h4>Cards per page</h4><div class="segmented">${[4,6,8].map(value => `<button class="${String(state.print.arrangement) === String(value) ? "is-active" : ""}" data-print-option="arrangement" data-value="${value}">${value}</button>`).join("")}</div></div>` : ""}
+        ${format.id === "display-poster" ? `<div class="control-group"><h4>Poster tiling</h4><div class="segmented"><button class="${state.print.arrangement !== "2x2" ? "is-active" : ""}" data-print-option="arrangement" data-value="single">Single page</button><button class="${state.print.arrangement === "2x2" ? "is-active" : ""}" data-print-option="arrangement" data-value="2x2">2 × 2 tiles</button></div></div>` : ""}
+        <div class="control-group"><h4>Growth stages</h4><div class="print-stage-list">${DATA.stages.map(stage => `<label><input type="checkbox" data-print-stage="${stage.id}" ${stageIds.includes(stage.id) ? "checked" : ""} ${format.id === "mixed-pack" ? "disabled" : ""}><span>${stage.glyph} ${stage.name}</span></label>`).join("")}</div><small>Pupil pages carry discreet teacher codes, not public level labels.</small></div>
+        <div class="control-group"><div class="switch-row"><span>Teacher guidance</span><button class="switch" role="switch" aria-checked="${state.print.teacherGuidance}" data-print-toggle="teacherGuidance"></button></div><div class="switch-row"><span>Model answers</span><button class="switch" role="switch" aria-checked="${state.print.answers}" data-print-toggle="answers"></button></div><div class="switch-row"><span>Enlarged print</span><button class="switch" role="switch" aria-checked="${state.print.largePrint}" data-print-toggle="largePrint"></button></div><div class="switch-row"><span>Photocopy intelligence</span><button class="switch" role="switch" aria-checked="${state.print.photocopy}" data-print-toggle="photocopy"></button></div><div class="switch-row"><span>Crop marks</span><button class="switch" role="switch" aria-checked="${state.print.cropMarks}" data-print-toggle="cropMarks"></button></div><div class="switch-row"><span>Cut lines</span><button class="switch" role="switch" aria-checked="${state.print.cutLines}" data-print-toggle="cutLines"></button></div><div class="switch-row"><span>Duplex guidance</span><button class="switch" role="switch" aria-checked="${state.print.duplex}" data-print-toggle="duplex"></button></div></div>
+        ${state.print.duplex ? `<div class="duplex-note">${format.id === "mini-booklet" ? "Print double-sided, flip on the short edge, then fold at the centre." : "Print double-sided and flip on the long edge unless your printer preview shows otherwise."}</div>` : ""}
+        <button class="button button-primary" data-action="print-now"><span data-icon="print"></span> Print ${pages.length} page${pages.length === 1 ? "" : "s"}</button>
+      </aside><div class="page-stack">${pages.map((page, index) => renderPrintPage(page.scaffold, page.type, index, {
+        allowStageMove: page.type === "resource" && format.id !== "mixed-pack" && state.print.arrangement !== "2x2" && stageIds.length > 1,
+        first: page.type === "resource" && stageIds.indexOf(page.scaffold.stage) === 0,
+        last: page.type === "resource" && stageIds.indexOf(page.scaffold.stage) === stageIds.length - 1
+      })).join("")}</div></div>`;
   }
 
   function renderSettings() {
@@ -1069,7 +1265,17 @@
       <section class="settings-card"><h3>New scaffold defaults</h3><p>Start closer to the choices you make most often.</p><div class="settings-list">
         <div class="settings-row"><span><strong>Starting support stage</strong><small>You can still change this during creation.</small></span><select data-setting-select="defaultStage">${DATA.stages.map(item => `<option value="${item.id}" ${item.id === state.settings.defaultStage ? "selected" : ""}>${esc(item.name)}</option>`).join("")}</select></div>
         <div class="settings-row"><span><strong>Default paper</strong><small>Used when Print Studio first opens.</small></span><select data-setting-select="defaultPaper"><option value="a4" ${state.settings.defaultPaper === "a4" ? "selected" : ""}>A4</option><option value="a5" ${state.settings.defaultPaper === "a5" ? "selected" : ""}>A5</option></select></div>
-        <div class="settings-row"><span><strong>Default ink</strong><small>Colour can always be changed per print.</small></span><select data-setting-select="defaultColour"><option value="colour" ${state.settings.defaultColour === "colour" ? "selected" : ""}>Colour</option><option value="greyscale" ${state.settings.defaultColour === "greyscale" ? "selected" : ""}>Greyscale</option></select></div>
+        <div class="settings-row"><span><strong>Default ink</strong><small>Colour can always be changed per print.</small></span><select data-setting-select="defaultColour">${DATA.build3.printModes.map(mode => `<option value="${mode}" ${state.settings.defaultColour === mode ? "selected" : ""}>${titleCase(mode)}</option>`).join("")}</select></div>
+        <div class="settings-row"><span><strong>Typical year group</strong><small>Used as a starting point, never a limit.</small></span><select data-setting-select="typicalYear">${DATA.years.map(year => `<option ${state.settings.typicalYear === year ? "selected" : ""}>${esc(year)}</option>`).join("")}</select></div>
+        <div class="settings-row"><span><strong>Preferred density</strong><small>Controls initial resource spacing.</small></span><select data-setting-select="preferredDensity">${DATA.build3.densityModes.map(mode => `<option value="${mode}" ${state.settings.preferredDensity === mode ? "selected" : ""}>${titleCase(mode)}</option>`).join("")}</select></div>
+      </div></section>
+      <section class="settings-card"><h3>Classroom resource preferences</h3><p>Remember practical defaults transparently on this device.</p><div class="settings-list">
+        ${settingSwitch("Include teacher guidance", "Add concise introduction, misuse and fading guidance by default.", "includeTeacherGuidance")}
+        ${settingSwitch("Include answer pages", "Show optional answer guidance in Print Studio.", "includeAnswers")}
+        ${settingSwitch("Page numbers", "Number printed pages where the format supports it.", "pageNumbers")}
+        <div class="settings-row"><span><strong>Line thickness</strong><small>Useful for photocopying and enlarged print.</small></span><select data-setting-select="lineThickness"><option value="standard" ${state.settings.lineThickness === "standard" ? "selected" : ""}>Standard</option><option value="strong" ${state.settings.lineThickness === "strong" ? "selected" : ""}>Stronger</option></select></div>
+        <div class="settings-row settings-row-stack"><span><strong>School or class label</strong><small>Optional. Never enter pupil names.</small></span><div><input class="input" data-setting-field="schoolLabel" value="${esc(state.settings.schoolLabel)}" placeholder="School name"><input class="input" data-setting-field="classLabel" value="${esc(state.settings.classLabel)}" placeholder="Class label"></div></div>
+        <div class="settings-row"><span><strong>Preferred terminology</strong><small>Used in teacher-facing guidance.</small></span><select data-setting-select="terminology"><option value="pupils" ${state.settings.terminology === "pupils" ? "selected" : ""}>Pupils</option><option value="children" ${state.settings.terminology === "children" ? "selected" : ""}>Children</option><option value="learners" ${state.settings.terminology === "learners" ? "selected" : ""}>Learners</option></select></div>
       </div></section>
       <section class="settings-card"><h3>Local data</h3><p>Back up or move your library without creating an account.</p><div class="settings-list"><div class="settings-row"><span><strong>Export a backup</strong><small>Download scaffolds, settings and reflections as JSON.</small></span><button class="button button-compact" data-action="export-data"><span data-icon="download"></span> Export</button></div><div class="settings-row"><span><strong>Import a backup</strong><small>Restore a Scaffold Seeds JSON backup.</small></span><label class="button button-compact" for="import-file"><span data-icon="upload"></span> Import</label><input class="file-input" type="file" id="import-file" accept="application/json" data-action="import-data"></div></div></section>
       <section class="settings-card"><h3>Privacy and reset</h3><p>No login, server, tracking or external AI. Data is stored in this browser only.</p><div class="settings-list"><div class="settings-row"><span><strong>Clear local data</strong><small>Deletes saved scaffolds, reflections and the current draft.</small></span><button class="button button-compact button-danger" data-action="clear-data"><span data-icon="trash"></span> Clear</button></div></div></section>
@@ -1104,10 +1310,11 @@
   }
 
   function showAllEngines() {
+    const compatible = DATA.engines.filter(engine => engine.subjects.includes("all") || engine.subjects.includes(state.draft.subject));
     openModal({
       title: "Choose a scaffold engine",
-      subtitle: "Fifteen different structures—not one template in fifteen colours.",
-      body: `<div class="engine-recommendations" style="grid-template-columns:repeat(2,1fr)">${DATA.engines.map((engine, index) => `<button class="engine-card ${state.draft.engineId === engine.id ? "is-selected" : ""}" data-action="modal-choose-engine" data-id="${engine.id}"><span class="engine-number">${String(index + 1).padStart(2, "0")}</span><h4>${esc(engine.name)}</h4><p>${esc(engine.tagline)}</p><p><strong>Distinctive form:</strong> ${esc(engine.distinctive)}</p></button>`).join("")}</div>`
+      subtitle: `${compatible.length} subject-compatible structures from a ${DATA.engines.length}-engine professional library.`,
+      body: `<div class="engine-recommendations engine-browser">${compatible.map((engine, index) => `<button class="engine-card ${state.draft.engineId === engine.id ? "is-selected" : ""}" data-action="modal-choose-engine" data-id="${engine.id}"><span class="engine-number">${String(index + 1).padStart(2, "0")}</span><span class="family-label">${esc(familyById(engine.family).name)}</span><h4>${esc(engine.name)}</h4><p>${esc(engine.tagline)}</p><small><strong>Preserves:</strong> ${esc(engine.preserves)}</small><small><strong>Watch:</strong> ${esc(engine.risk)}</small></button>`).join("")}</div>`
     });
   }
 
@@ -1122,11 +1329,11 @@
   function showQualityReport() {
     const scaffold = state.activeScaffold || scaffoldFromDraft();
     const audit = qualityAudit({ ...scaffold, stage: state.draft.stage || scaffold.stage });
-    const overall = Math.round(audit.reduce((sum, item) => sum + item.score, 0) / audit.length);
+    const reviewCount = audit.filter(item => item.status !== "Strong").length;
     openModal({
-      title: `Scaffold quality · ${overall}/100`,
-      subtitle: "An inspectable design audit, not a claim that classroom judgement can be automated.",
-      body: `<div class="quality-report">${audit.map(item => `<section><div class="quality-report-head"><strong>${esc(item.label)}</strong><span>${item.score}</span></div><div class="quality-track"><i style="width:${item.score}%"></i></div><p>${esc(item.evidence)}</p></section>`).join("")}</div><div class="quality-principle"><strong>Professional judgement remains final.</strong><p>Use this report to spot a design risk. The real test is what pupils do when the support becomes lighter.</p></div>`
+      title: reviewCount ? `Scaffold quality · ${reviewCount} review point${reviewCount === 1 ? "" : "s"}` : "Scaffold quality · Strong",
+      subtitle: "Eleven explainable professional judgements—never a fake effectiveness percentage.",
+      body: `<div class="quality-report build3-quality">${audit.map(item => `<section class="quality-${esc(item.status.toLowerCase().replaceAll(" ", "-"))}"><div class="quality-report-head"><strong>${esc(item.label)}</strong><span>${esc(item.status)}</span></div><p>${esc(item.reason)}</p>${item.action && item.status !== "Strong" ? `<small>${esc(item.action)}</small>` : ""}</section>`).join("")}</div><div class="quality-principle"><strong>Professional judgement remains final.</strong><p>The real test is what pupils do when the support becomes lighter. Use one or two independence checks rather than generating a quiz.</p></div>`
     });
   }
 
@@ -1167,6 +1374,10 @@
       recommendedNextStage: worked === "yes" ? (DATA.stages[Math.min(currentStageIndex + 1, DATA.stages.length - 1)]?.id || scaffold.stage) : scaffold.stage,
       updatedAt: new Date().toISOString()
     };
+    const reflectionText = `${scaffold.reflection.surprise} ${scaffold.reflection.reduceNext}`.toLowerCase();
+    if (/sentence stem|stems/.test(reflectionText)) state.preferences.questionPrompts = true;
+    if (/more space|larger writing|bigger lines|wider lines/.test(reflectionText)) state.preferences.largerWritingArea = true;
+    writeStore(STORAGE.preferences, state.preferences);
     scaffold.updatedAt = new Date().toISOString();
     if (state.activeScaffold?.id === scaffold.id) state.activeScaffold = scaffold;
     writeStore(STORAGE.library, state.library);
@@ -1175,13 +1386,76 @@
     render();
   }
 
-  function createAIPrompt(scaffold) {
+  function createAIPrompt(scaffold, taskId = state.aiTask, mode = state.aiMode) {
     const subject = subjectById(scaffold.subject);
     const engine = engineById(scaffold.engineId);
     const stage = DATA.stages.find(item => item.id === scaffold.stage);
     const barriers = scaffold.barriers.map(barrierById).filter(Boolean);
     const intelligence = curriculumIntelligence(scaffold);
-    return `Create a professionally designed, classroom-ready scaffold for an English primary classroom.
+    const task = DATA.aiTasks.find(item => item.id === taskId) || DATA.aiTasks[0];
+    const content = RESOURCE.normalise(scaffold).content;
+    const guardrails = {
+      mathematics: "Verify every calculation and equivalence. Ensure each representation matches the mathematical structure. Provide a separate answer audit.",
+      history: "Do not invent quotations or primary sources. Identify reconstructions clearly. Give provenance for any real source supplied.",
+      science: "Verify scientific accuracy. Distinguish observation, measurement and inference. Avoid simplified diagrams that create a misconception.",
+      english: "For reading or phonics, do not encourage picture guessing or conflict with the school's chosen phonics programme. Verify decodability if requested.",
+      "religious-education": "Represent diversity within traditions, do not fabricate testimony and avoid universal claims. Follow the locally applicable syllabus supplied by the teacher.",
+      pshe: "Use fictional third-person scenarios, safeguarding-sensitive language and no request for personal disclosure. Classroom learning is not therapeutic support.",
+      languages: "Verify grammar and natural usage. Do not use inaccurate English-style pronunciation approximations.",
+      geography: "Avoid stereotypes and simplistic rich/poor place comparisons. Locate evidence and name scale.",
+      computing: "Distinguish algorithm, program, code, data, information, hardware, software and network accurately. Do not reveal the debugging answer before investigation."
+    };
+    const core = `TASK
+${task.name} for the defined scaffold below. Return only the bounded enhancement requested.
+
+NON-NEGOTIABLE INSTRUCTION
+Do not redesign the scaffold structure unless explicitly asked. Populate and enhance the defined structure while preserving the pupil thinking identified below.
+
+CONTEXT
+- England primary: ${scaffold.year}
+- Subject: ${subject.name}
+- Topic: ${scaffold.topic}
+- Curriculum objective: ${scaffold.objective}
+- Intended pupil outcome: ${scaffold.expectedOutcome || "Demonstrate the objective through the protected subject decision."}
+- Lesson phase: ${scaffold.phase}
+- Prerequisite knowledge: ${(scaffold.prerequisites || intelligence.profile.prerequisites).join("; ")}
+
+BARRIER AND OWNERSHIP
+- Teacher observation: ${scaffold.situation}
+- Identified barriers: ${barriers.map(barrier => barrier.name).join(", ")}${scaffold.customBarrier ? `; ${scaffold.customBarrier}` : ""}
+- Essential thinking that must remain with the pupil: ${scaffold.essentialThinking || protectedThinkingStatement(scaffold)}
+- Pupil action: ${scaffold.pupilAction || "Use the support, then make and explain the central decision."}
+
+DEFINED LOCAL STRUCTURE
+- Engine: ${engine.name}
+- Engine purpose: ${engine.tagline}
+- Layout form: ${engine.distinctive}
+- Editable instruction: ${content.instruction}
+- Editable prompts: ${content.prompts.join(" | ")}
+- Example role: ${content.example}
+- Vocabulary: ${content.vocabulary.join(", ")}
+- Representation: ${content.diagramType || scaffold.representation || "None forced"}
+- Current support: ${stage.name} — ${stage.description}
+- Fading pathway: ${scaffold.removalPathway || RESOURCE.nextFade(scaffold)}
+- Print format: ${printFormatById(scaffold.format || state.print.format).name}; ${state.print.paper.toUpperCase()} ${state.print.orientation}; ${state.print.colour}
+- Access controls: ${content.instructionMode} instructions; ${content.density} density; ${content.responseSpace} response space; oral rehearsal ${content.oralRehearsal ? "included" : "not included"}
+
+SUBJECT ACCURACY GUARDRAIL
+${guardrails[scaffold.subject] || "Verify every factual claim and preserve the disciplinary character of the subject."}
+
+FORBIDDEN CHANGES
+- Do not lower or replace the curriculum objective.
+- Do not supply the conclusion, interpretation, operation, design decision or answer that belongs to the pupil.
+- Do not add generic decoration, fixed-ability labels, pupil-identifying information or diagnosis-specific branding.
+- Do not add arbitrary sections or turn the resource into a generic worksheet.
+- Do not rely on colour alone or include executable HTML.
+
+VALIDATION REQUIRED
+Check factual accuracy, answer leakage, repeated prompts, language load, representation validity, UK spelling and print overflow. State any uncertainty plainly.`;
+    if (mode === "compact") return core;
+    return `Create a professionally accurate enhancement for an English primary classroom scaffold.
+
+${core}
 
 PRODUCT PHILOSOPHY
 This must be a temporary support that removes barriers without reducing the intellectual challenge. It must not become a simplified worksheet, complete the thinking for pupils, lower the curriculum objective, or label pupils by need. The pupil must retain the important subject decisions, reasoning and explanation.
@@ -1203,7 +1477,7 @@ ${barriers.map(barrier => `- ${barrier.name}: ${barrier.hint}`).join("\n")}
 TEACHER INTENTION
 ${scaffold.intention}
 
-SCAFFOLD ARCHITECTURE
+SCAFFOLD ARCHITECTURE TO PRESERVE
 - Engine: ${engine.name}
 - Engine purpose: ${engine.tagline}
 - Distinctive structure: ${engine.distinctive}
@@ -1222,7 +1496,7 @@ SUBJECT KNOWLEDGE TO HANDLE CAREFULLY
 - Subject principles: ${subject.principles.join("; ")}
 
 LAYOUT SPECIFICATION
-Create a genuinely distinctive ${engine.name} rather than a generic boxed worksheet. Use the engine structure described above. The output must be suitable for ${state.print.paper.toUpperCase()} ${state.print.orientation}, with generous margins, an uncluttered visual hierarchy, highly legible typography, purposeful writing space and photocopy-safe borders. Use calm warm neutrals, deep indigo and restrained sage if colour is included. Avoid cartoons, clip-art, decorative gradients and visual noise.
+Populate the existing ${engine.name} structure rather than redesigning it. The output must be suitable for ${state.print.paper.toUpperCase()} ${state.print.orientation}, with safe margins, readable type, sufficient interaction space and photocopy-safe hierarchy. Avoid cartoons, clip-art, decorative gradients and visual noise.
 
 ACCESSIBILITY
 - Use plain, age-appropriate instructions without diluting subject language.
@@ -1254,31 +1528,167 @@ Silently review and revise the resource until every answer is yes:
 - Would an experienced English primary teacher use it immediately?
 - Will it print cleanly in colour and greyscale?
 
-Return the finished pupil resource first, followed by the teacher guidance and the four-stage fading notes. Do not include generic commentary, marketing language or placeholder text.`;
+Return the requested ${task.name.toLowerCase()} enhancement first, followed by a short accuracy and answer-leakage audit. Do not include generic commentary, marketing language or placeholder text.`;
   }
 
   function showAIPrompt() {
-    const scaffold = state.activeScaffold || scaffoldFromDraft();
-    const prompt = createAIPrompt(scaffold);
-    openModal({
-      title: "AI Companion",
-      subtitle: "A complete external prompt. No pupil data or text has been sent anywhere.",
-      body: `<label class="form-label" for="ai-prompt-output">Copy and use with the AI tool of your choice</label><textarea class="prompt-output" id="ai-prompt-output" readonly>${esc(prompt)}</textarea>`,
-      footer: '<button class="button" data-action="close-modal">Close</button><button class="button button-primary" data-action="copy-ai-prompt"><span data-icon="copy"></span> Copy prompt</button>'
-    });
+    state.aiPromptEdit = "";
+    state.createStep = 6;
+    state.view = "create";
+    render();
+  }
+
+  function regenerateSection(sectionName) {
+    const scaffold = RESOURCE.normalise({ ...scaffoldFromDraft(), content: state.draft.content });
+    const profile = RESOURCE.profileFor(scaffold);
+    const engine = engineById(scaffold.engineId);
+    if (sectionName === "instruction") {
+      state.draft.content.instructionMode = "one-at-a-time";
+      state.draft.content.instruction = (engine.prompts?.[0] || profile.questions?.[0] || "Begin with the first subject decision.").replace(/[.:;]+$/, "") + ".";
+      state.draft.content.subInstruction = "Complete this decision before reading the next prompt.";
+    }
+    if (sectionName === "example") {
+      state.draft.content.example = scaffold.subject === "mathematics" ? "Use a new set of values with the same mathematical structure. Complete only the first decision; leave the operation and conclusion for the pupil." : scaffold.subject === "history" ? "Use a different source detail. Model how provenance changes the question we can ask, but leave the historical inference blank." : scaffold.subject === "science" ? "Model one observation and one measurement. Leave the pattern and scientific explanation for pupils to form from the evidence." : "Model one transferable decision in a parallel context. Leave the central content, interpretation or conclusion blank.";
+    }
+    if (sectionName === "prompts") {
+      const questions = [...(profile.questions || []), `What must remain true for this ${profile.name.toLowerCase()} decision to work?`, "What evidence or relationship makes your choice defensible?", "Which prompt can you now remove?" ];
+      state.draft.content.prompts = questions.slice(0, 5);
+      state.preferences.questionPrompts = true;
+      writeStore(STORAGE.preferences, state.preferences);
+    }
+    state.activeScaffold = { ...(state.activeScaffold || scaffoldFromDraft()), content: { ...state.draft.content }, updatedAt: new Date().toISOString() };
+    saveDraft();
+    toast(sectionName === "prompts" ? "Prompts replaced with subject questions." : sectionName === "example" ? "A new local example frame was created." : "Instruction language shortened without lowering the objective.");
+    render();
+  }
+
+  function importControlledContent() {
+    const source = document.getElementById("controlled-import-text");
+    if (!source) return;
+    const clean = RESOURCE.sanitizeImport(source.value);
+    if (!clean) {
+      toast("Paste some plain text to import first.");
+      return;
+    }
+    const lines = clean.split(/\n+/).map(item => item.replace(/^[-•\d.)\s]+/, "").trim()).filter(Boolean);
+    if (state.importType === "vocabulary") state.draft.content.vocabulary = clean.split(/[,\n]/).map(item => item.trim()).filter(Boolean).slice(0, 12);
+    if (["examples", "passage"].includes(state.importType)) state.draft.content.example = clean.slice(0, 3000);
+    if (["questions", "scenarios"].includes(state.importType)) state.draft.content.prompts = lines.slice(0, 10);
+    if (state.importType === "teacher-notes") state.draft.content.teacherNotes = clean.slice(0, 3000);
+    state.activeScaffold = { ...(state.activeScaffold || scaffoldFromDraft()), content: { ...state.draft.content }, updatedAt: new Date().toISOString() };
+    state.createStep = 4;
+    saveDraft();
+    toast(`Imported ${state.importType.replaceAll("-", " ")} as sanitised editable text.`);
+    render();
   }
 
   function saveScaffold() {
     const scaffold = state.activeScaffold ? { ...state.activeScaffold, ...scaffoldFromDraft(), id: state.activeScaffold.id, createdAt: state.activeScaffold.createdAt, reflection: state.activeScaffold.reflection || null } : scaffoldFromDraft();
     scaffold.updatedAt = new Date().toISOString();
     const index = state.library.findIndex(item => item.id === scaffold.id);
-    if (index >= 0) state.library[index] = scaffold;
+    if (index >= 0) {
+      const previous = state.library[index];
+      const versions = [...(previous.versions || [])];
+      if (meaningfulHash(previous) !== meaningfulHash(scaffold)) versions.unshift(versionSnapshot(previous, `Before ${formatDate(scaffold.updatedAt)}`));
+      scaffold.versions = versions.slice(0, 16);
+      state.library[index] = scaffold;
+    }
     else state.library.unshift(scaffold);
     state.activeScaffold = scaffold;
     state.draft.editingId = scaffold.id;
     writeStore(STORAGE.library, state.library);
     saveDraft();
     toast(index >= 0 ? "Scaffold changes saved locally." : "Scaffold saved to your library.");
+    render();
+  }
+
+  function versionSnapshot(scaffold, name = "Saved checkpoint") {
+    const { versions, ...snapshot } = scaffold;
+    return { id: uid(), name, savedAt: new Date().toISOString(), snapshot: JSON.parse(JSON.stringify(snapshot)) };
+  }
+
+  function meaningfulHash(scaffold) {
+    const { updatedAt, lastPrintedAt, versions, favourite, reflection, ...meaningful } = scaffold || {};
+    return JSON.stringify(meaningful);
+  }
+
+  function saveVersion() {
+    if (!state.activeScaffold || !state.library.some(item => item.id === state.activeScaffold.id)) saveScaffold();
+    const scaffold = state.library.find(item => item.id === state.activeScaffold?.id);
+    if (!scaffold) return;
+    const name = window.prompt("Name this checkpoint", `Ready for ${scaffold.phase.toLowerCase()}`);
+    if (name === null) return;
+    scaffold.versions = [versionSnapshot(scaffold, name.trim() || "Named checkpoint"), ...(scaffold.versions || [])].slice(0, 16);
+    scaffold.updatedAt = new Date().toISOString();
+    writeStore(STORAGE.library, state.library);
+    toast("Version checkpoint created.");
+    render();
+  }
+
+  function showVersions(id) {
+    const scaffold = state.library.find(item => item.id === id);
+    if (!scaffold) return;
+    const versions = scaffold.versions || [];
+    openModal({
+      title: "Version history",
+      subtitle: `${scaffold.title} · checkpoints are created only on deliberate saves.`,
+      body: versions.length ? `<div class="version-list">${versions.map((version, index) => `<section><div><span class="eyebrow">${relativeDate(version.savedAt)}</span><h3>${esc(version.name)}</h3><p>${esc(version.snapshot.stage ? `${titleCase(version.snapshot.stage)} · ${engineById(version.snapshot.engineId).name}` : "Earlier resource")}</p></div><div><button class="button button-compact" data-action="restore-version" data-parent="${esc(id)}" data-id="${esc(version.id)}">Restore</button><button class="button button-compact" data-action="duplicate-version" data-parent="${esc(id)}" data-id="${esc(version.id)}">Duplicate</button></div></section>`).join("")}</div>` : `<div class="empty-help"><h4>No earlier checkpoints yet</h4><p>Save a meaningful edit or create a named checkpoint from the review screen.</p></div>`
+    });
+  }
+
+  function restoreVersion(parentId, versionId, duplicate = false) {
+    const parent = state.library.find(item => item.id === parentId);
+    const version = parent?.versions?.find(item => item.id === versionId);
+    if (!parent || !version) return;
+    const restored = JSON.parse(JSON.stringify(version.snapshot));
+    const now = new Date().toISOString();
+    if (duplicate) {
+      restored.id = uid(); restored.title = `${restored.title} · from version`; restored.createdAt = now; restored.updatedAt = now; restored.versions = [];
+      state.library.unshift(restored);
+    } else {
+      const currentVersion = versionSnapshot(parent, "Before version restore");
+      Object.assign(parent, restored, { id: parent.id, createdAt: parent.createdAt, updatedAt: now, versions: [currentVersion, ...(parent.versions || [])].slice(0, 16) });
+      if (state.activeScaffold?.id === parent.id) state.activeScaffold = parent;
+    }
+    writeStore(STORAGE.library, state.library);
+    closeModal();
+    toast(duplicate ? "A new scaffold was created from that version." : "Earlier version restored. The replaced state was checkpointed.");
+    render();
+  }
+
+  function renameScaffold(id) {
+    const scaffold = state.library.find(item => item.id === id);
+    if (!scaffold) return;
+    const name = window.prompt("Rename scaffold", scaffold.title);
+    if (!name?.trim() || name.trim() === scaffold.title) return;
+    scaffold.versions = [versionSnapshot(scaffold, "Before rename"), ...(scaffold.versions || [])].slice(0, 16);
+    scaffold.title = name.trim().slice(0, 140);
+    scaffold.updatedAt = new Date().toISOString();
+    writeStore(STORAGE.library, state.library);
+    toast("Scaffold renamed.");
+    render();
+  }
+
+  function setArchive(id, archived) {
+    const scaffold = state.library.find(item => item.id === id);
+    if (!scaffold) return;
+    scaffold.archived = archived;
+    scaffold.updatedAt = new Date().toISOString();
+    writeStore(STORAGE.library, state.library);
+    toast(archived ? "Scaffold moved to the archive." : "Scaffold restored to the library.");
+    render();
+  }
+
+  function recordFade(id) {
+    const scaffold = state.library.find(item => item.id === id);
+    if (!scaffold) return;
+    const from = scaffold.stage;
+    const to = state.draft.stage;
+    scaffold.fadeHistory = [...(scaffold.fadeHistory || []), { from, to, at: new Date().toISOString() }].slice(-20);
+    scaffold.stage = to;
+    scaffold.updatedAt = new Date().toISOString();
+    writeStore(STORAGE.library, state.library);
+    toast(`Move from ${titleCase(from)} to ${titleCase(to)} recorded.`);
     render();
   }
 
@@ -1298,7 +1708,7 @@ Return the finished pupil resource first, followed by the teacher guidance and t
     analyseBarrier();
     state.draft.selectedBarriers = [...scaffold.barriers];
     state.draft.engineId = scaffold.engineId;
-    state.createStep = 4;
+    state.createStep = 5;
     saveDraft();
     navigate("create");
   }
@@ -1307,7 +1717,7 @@ Return the finished pupil resource first, followed by the teacher guidance and t
     const original = state.library.find(item => item.id === id);
     if (!original) return;
     const now = new Date().toISOString();
-    const copy = { ...original, id: uid(), title: `${original.title} · copy`, favourite: false, reflection: null, createdAt: now, updatedAt: now };
+    const copy = { ...original, id: uid(), title: `${original.title} · copy`, favourite: false, archived: false, reflection: null, versions: [], createdAt: now, updatedAt: now };
     state.library.unshift(copy);
     writeStore(STORAGE.library, state.library);
     toast("A fresh copy has been added to your library.");
@@ -1316,16 +1726,16 @@ Return the finished pupil resource first, followed by the teacher guidance and t
 
   function deleteScaffold(id) {
     const item = state.library.find(scaffold => scaffold.id === id);
-    if (!item || !window.confirm(`Delete “${item.title}”? This cannot be undone.`)) return;
+    if (!item?.archived || !window.confirm(`Permanently delete “${item.title}”? Export a backup first if you may need it later.`)) return;
     state.library = state.library.filter(scaffold => scaffold.id !== id);
     if (state.activeScaffold?.id === id) state.activeScaffold = state.library[0] || null;
     writeStore(STORAGE.library, state.library);
-    toast("Scaffold deleted from this device.");
+    toast("Archived scaffold permanently deleted. It can be recovered only from an exported backup.");
     render();
   }
 
   function exportData() {
-    const payload = JSON.stringify({ version: 1, exportedAt: new Date().toISOString(), library: state.library, settings: state.settings, reflections: state.reflections }, null, 2);
+    const payload = JSON.stringify({ product: "Scaffold Seeds", version: 3, exportedAt: new Date().toISOString(), library: state.library, settings: state.settings, reflections: state.reflections, preferences: state.preferences }, null, 2);
     const url = URL.createObjectURL(new Blob([payload], { type: "application/json" }));
     const link = document.createElement("a");
     link.href = url;
@@ -1342,12 +1752,14 @@ Return the finished pupil resource first, followed by the teacher guidance and t
     try {
       const data = JSON.parse(await file.text());
       if (!Array.isArray(data.library) || typeof data.settings !== "object") throw new Error("invalid");
-      state.library = data.library;
+      state.library = data.library.filter(item => item && typeof item === "object" && typeof item.title === "string" && typeof item.subject === "string").map(item => ({ ...item, versions: Array.isArray(item.versions) ? item.versions.slice(0, 16) : [] }));
       state.settings = { ...defaultSettings, ...data.settings };
       state.reflections = data.reflections || {};
+      state.preferences = data.preferences || {};
       writeStore(STORAGE.library, state.library);
       writeStore(STORAGE.settings, state.settings);
       writeStore(STORAGE.reflections, state.reflections);
+      writeStore(STORAGE.preferences, state.preferences);
       applySettings();
       toast(`Imported ${state.library.length} scaffold${state.library.length === 1 ? "" : "s"}.`);
       render();
@@ -1361,6 +1773,8 @@ Return the finished pupil resource first, followed by the teacher guidance and t
     Object.values(STORAGE).forEach(key => localStorage.removeItem(key));
     state.library = [];
     state.reflections = {};
+    state.preferences = {};
+    state.archives = [];
     state.draft = normaliseDraft(null);
     state.activeScaffold = null;
     state.settings = { ...defaultSettings };
@@ -1372,9 +1786,12 @@ Return the finished pupil resource first, followed by the teacher guidance and t
   function printNow() {
     const scaffold = activeForPrint();
     if (!scaffold) return;
-    const order = state.print.pageOrder.filter(type => type !== "teacher" || state.print.teacherGuidance);
+    const format = printFormatById();
+    const stageIds = format.id === "mixed-pack" ? DATA.stages.map(stage => stage.id) : (state.print.stages.length ? state.print.stages : [scaffold.stage]);
+    const stageResources = stageIds.map(stage => RESOURCE.createStage(scaffold, stage));
+    const resources = format.id === "display-poster" && state.print.arrangement === "2x2" ? stageResources.flatMap(item => [0,1,2,3].map(tile => ({ ...item, printTile: tile }))) : stageResources;
     const printRoot = document.getElementById("print-root");
-    printRoot.innerHTML = order.map(type => type === "resource" ? applyPaperOptions(renderFormatDocument(scaffold)) : renderTeacherGuide(scaffold)).join("");
+    printRoot.innerHTML = resources.map(item => applyPaperOptions(renderFormatDocument(item))).join("") + (state.print.teacherGuidance ? renderTeacherGuide(scaffold) : "");
     let style = document.getElementById("print-dynamic-style");
     if (!style) {
       style = document.createElement("style");
@@ -1382,6 +1799,11 @@ Return the finished pupil resource first, followed by the teacher guidance and t
       document.head.appendChild(style);
     }
     style.textContent = `@media print { @page { size: ${state.print.paper.toUpperCase()} ${state.print.orientation}; margin: 0; } }`;
+    const libraryItem = state.library.find(item => item.id === scaffold.id);
+    if (libraryItem) {
+      libraryItem.lastPrintedAt = new Date().toISOString();
+      writeStore(STORAGE.library, state.library);
+    }
     setTimeout(() => window.print(), 30);
   }
 
@@ -1418,11 +1840,19 @@ Return the finished pupil resource first, followed by the teacher guidance and t
         toast("Choose or write a learning objective first.");
         return;
       }
-      if (state.createStep === 2 && !state.draft.engineId) {
+      if (state.createStep === 2 && !state.draft.selectedBarriers.length && !state.draft.customBarrier.trim()) {
+        toast("Choose or describe the barrier that best explains the sticking point.");
+        return;
+      }
+      if (state.createStep === 2 && !state.draft.essentialThinking.trim()) {
+        toast("State the thinking that must remain with pupils.");
+        return;
+      }
+      if (state.createStep === 3 && !state.draft.engineId) {
         toast("Choose the scaffold engine that best preserves the thinking.");
         return;
       }
-      state.createStep = Math.min(4, state.createStep + 1);
+      state.createStep = Math.min(6, state.createStep + 1);
       saveDraft();
       render();
     }
@@ -1452,10 +1882,21 @@ Return the finished pupil resource first, followed by the teacher guidance and t
         button.setAttribute("aria-pressed", String(state.draft.selectedBarriers.includes(id)));
       } else render();
     }
+    if (action === "move-barrier") {
+      const current = state.draft.selectedBarriers.indexOf(id);
+      const target = current + (button.dataset.direction === "up" ? -1 : 1);
+      if (current >= 0 && target >= 0 && target < state.draft.selectedBarriers.length) {
+        [state.draft.selectedBarriers[current], state.draft.selectedBarriers[target]] = [state.draft.selectedBarriers[target], state.draft.selectedBarriers[current]];
+        updateRecommendations();
+        saveDraft();
+        render();
+      }
+    }
     if (action === "choose-engine") {
       state.draft.engineId = id;
       state.draft.preferredEngine = "";
       state.draft.familyId = engineById(id).family;
+      state.draft.content = { ...normaliseDraft(null).content };
       saveDraft();
       render();
     }
@@ -1463,6 +1904,7 @@ Return the finished pupil resource first, followed by the teacher guidance and t
       state.draft.engineId = id;
       state.draft.preferredEngine = "";
       state.draft.familyId = engineById(id).family;
+      state.draft.content = { ...normaliseDraft(null).content };
       saveDraft();
       closeModal();
       render();
@@ -1471,31 +1913,52 @@ Return the finished pupil resource first, followed by the teacher guidance and t
     if (action === "show-all-engines") showAllEngines();
     if (action === "choose-stage") {
       state.draft.stage = id;
-      if (state.activeScaffold) state.activeScaffold = { ...state.activeScaffold, stage: id };
+      if (state.activeScaffold) {
+        state.activeScaffold = RESOURCE.createStage({ ...state.activeScaffold, content: state.draft.content }, id);
+      }
       saveDraft();
       render();
     }
+    if (action === "toggle-stage-compare") {
+      state.compareStages = !state.compareStages;
+      render();
+    }
+    if (action === "regenerate-section") regenerateSection(button.dataset.section);
     if (action === "generate-scaffold") {
       if (!state.draft.title.trim()) {
         toast("Give the resource a clear title first.");
         return;
       }
       state.activeScaffold = scaffoldFromDraft();
-      state.createStep = 4;
+      state.createStep = 5;
       saveDraft();
       render();
     }
     if (action === "save-scaffold") saveScaffold();
+    if (action === "save-version") saveVersion();
+    if (action === "record-fade") recordFade(id);
     if (action === "record-use-reflection") showUseReflection(id);
     if (action === "save-use-reflection") saveUseReflection();
     if (action === "show-quality-report") showQualityReport();
     if (action === "open-print") {
       state.activeScaffold = state.activeScaffold || scaffoldFromDraft();
+      state.print.format = state.activeScaffold.format || state.print.format;
+      state.print.stages = [state.activeScaffold.stage || state.settings.defaultStage];
       navigate("print");
     }
     if (action === "ai-prompt") showAIPrompt();
+    if (action === "ai-mode") {
+      state.aiMode = id;
+      state.aiPromptEdit = "";
+      render();
+    }
+    if (action === "reset-ai-prompt") {
+      state.aiPromptEdit = "";
+      render();
+    }
+    if (action === "import-controlled-content") importControlledContent();
     if (action === "edit-design") {
-      state.createStep = 3;
+      state.createStep = 4;
       render();
     }
     if (action === "start-again") newScaffold();
@@ -1509,6 +1972,12 @@ Return the finished pupil resource first, followed by the teacher guidance and t
     }
     if (action === "open-scaffold") loadScaffold(id);
     if (action === "duplicate-scaffold") duplicateScaffold(id);
+    if (action === "rename-scaffold") renameScaffold(id);
+    if (action === "archive-scaffold") setArchive(id, true);
+    if (action === "restore-scaffold") setArchive(id, false);
+    if (action === "show-versions") showVersions(id);
+    if (action === "restore-version") restoreVersion(button.dataset.parent, id, false);
+    if (action === "duplicate-version") restoreVersion(button.dataset.parent, id, true);
     if (action === "delete-scaffold") deleteScaffold(id);
     if (action === "toggle-favourite") {
       const item = state.library.find(scaffold => scaffold.id === id);
@@ -1524,7 +1993,12 @@ Return the finished pupil resource first, followed by the teacher guidance and t
       render();
     }
     if (action === "clear-library-filters") {
-      state.libraryFilters = { query: "", year: "all", subject: "all", favourite: false };
+      state.libraryFilters = { query: "", year: "all", subject: "all", family: "all", format: "all", stage: "all", favourite: false, archived: state.libraryFilters.archived, sort: "edited" };
+      render();
+    }
+    if (action === "library-view") {
+      state.libraryFilters.archived = id === "archived";
+      state.libraryFilters.query = "";
       render();
     }
     if (action === "knowledge-subject") {
@@ -1543,6 +2017,7 @@ Return the finished pupil resource first, followed by the teacher guidance and t
     if (action === "choose-print-format") showPrintFormats();
     if (action === "select-print-format") {
       state.print.format = id;
+      if (id === "a5-sheet") state.print.paper = "a5";
       closeModal();
       render();
     }
@@ -1550,12 +2025,12 @@ Return the finished pupil resource first, followed by the teacher guidance and t
       const question = button.dataset.question || button.textContent.trim();
       navigator.clipboard?.writeText(question).then(() => toast("Teacher question copied."), () => toast("Select and copy the question from the screen."));
     }
-    if (action === "move-page") {
-      const currentIndex = state.print.pageOrder.indexOf(id);
+    if (action === "move-print-stage") {
+      const currentIndex = state.print.stages.indexOf(id);
       const offset = button.dataset.direction === "up" ? -1 : 1;
       const targetIndex = currentIndex + offset;
-      if (currentIndex >= 0 && targetIndex >= 0 && targetIndex < state.print.pageOrder.length) {
-        [state.print.pageOrder[currentIndex], state.print.pageOrder[targetIndex]] = [state.print.pageOrder[targetIndex], state.print.pageOrder[currentIndex]];
+      if (currentIndex >= 0 && targetIndex >= 0 && targetIndex < state.print.stages.length) {
+        [state.print.stages[currentIndex], state.print.stages[targetIndex]] = [state.print.stages[targetIndex], state.print.stages[currentIndex]];
         render();
       }
     }
@@ -1565,15 +2040,41 @@ Return the finished pupil resource first, followed by the teacher guidance and t
     if (action === "close-modal") closeModal();
     if (action === "copy-ai-prompt") {
       const output = document.getElementById("ai-prompt-output");
-      if (output) navigator.clipboard.writeText(output.value).then(() => toast("AI prompt copied."), () => {
-        output.select();
-        document.execCommand("copy");
-        toast("AI prompt copied.");
-      });
+      if (output) {
+        const fallback = () => { output.select(); document.execCommand?.("copy"); toast("AI prompt copied."); };
+        if (navigator.clipboard?.writeText) navigator.clipboard.writeText(output.value).then(() => toast("AI prompt copied."), fallback);
+        else fallback();
+      }
     }
   });
 
   document.addEventListener("input", event => {
+    const contentField = event.target.closest("[data-content-field]");
+    if (contentField && contentField.tagName !== "SELECT") {
+      const key = contentField.dataset.contentField;
+      const mode = contentField.dataset.listMode;
+      state.draft.content[key] = mode === "lines" ? contentField.value.split(/\n+/).map(item => item.trim()).filter(Boolean) : mode === "commas" ? contentField.value.split(/[,\n]/).map(item => item.trim()).filter(Boolean) : contentField.value;
+      if (key === "vocabulary") state.draft.vocabulary = state.draft.content.vocabulary.join(", ");
+      setSaveStatus("unsaved");
+      saveDraft();
+      const preview = document.getElementById("live-resource-preview");
+      if (preview) {
+        const scaffold = { ...scaffoldFromDraft(), content: state.draft.content, diagram: { ...state.draft.diagram, type: state.draft.content.diagramType, labels: state.draft.content.diagramLabels } };
+        preview.innerHTML = renderResourceDocument(scaffold);
+      }
+      return;
+    }
+    const aiPromptField = event.target.closest("[data-ai-prompt-edit]");
+    if (aiPromptField) {
+      state.aiPromptEdit = aiPromptField.value;
+      return;
+    }
+    const settingField = event.target.closest("[data-setting-field]");
+    if (settingField) {
+      state.settings[settingField.dataset.settingField] = settingField.value.slice(0, 120);
+      writeStore(STORAGE.settings, state.settings);
+      return;
+    }
     const field = event.target.closest("[data-draft-field]");
     if (field && field.tagName !== "SELECT") {
       state.draft[field.dataset.draftField] = field.value;
@@ -1581,6 +2082,10 @@ Return the finished pupil resource first, followed by the teacher guidance and t
       if (field.dataset.draftField === "situation") {
         const guidance = document.getElementById("live-guidance");
         if (guidance) guidance.innerHTML = renderLiveGuidance();
+      }
+      if (state.createStep === 4) {
+        const preview = document.getElementById("live-resource-preview");
+        if (preview) preview.innerHTML = renderResourceDocument({ ...scaffoldFromDraft(), content: state.draft.content, diagram: { ...state.draft.diagram, type: state.draft.content.diagramType, labels: state.draft.content.diagramLabels } });
       }
       return;
     }
@@ -1596,6 +2101,52 @@ Return the finished pupil resource first, followed by the teacher guidance and t
   });
 
   document.addEventListener("change", event => {
+    const contentField = event.target.closest("[data-content-field]");
+    if (contentField) {
+      const key = contentField.dataset.contentField;
+      const mode = contentField.dataset.listMode;
+      state.draft.content[key] = mode === "commas" ? contentField.value.split(/[,\n]/).map(item => item.trim()).filter(Boolean) : contentField.value;
+      if (key === "diagramType") state.draft.diagram.type = contentField.value;
+      saveDraft();
+      render();
+      return;
+    }
+    const contentToggle = event.target.closest("[data-content-toggle]");
+    if (contentToggle) {
+      state.draft.content[contentToggle.dataset.contentToggle] = contentToggle.checked;
+      saveDraft();
+      render();
+      return;
+    }
+    const sectionToggle = event.target.closest("[data-hidden-section]");
+    if (sectionToggle) {
+      const id = sectionToggle.dataset.hiddenSection;
+      const hidden = state.draft.content.hiddenSections || [];
+      state.draft.content.hiddenSections = sectionToggle.checked ? hidden.filter(item => item !== id) : [...new Set([...hidden, id])];
+      saveDraft();
+      render();
+      return;
+    }
+    const aiTask = event.target.closest("[data-ai-task]");
+    if (aiTask) {
+      state.aiTask = aiTask.value;
+      state.aiPromptEdit = "";
+      render();
+      return;
+    }
+    const importType = event.target.closest("[data-import-type]");
+    if (importType) {
+      state.importType = importType.value;
+      return;
+    }
+    const printStage = event.target.closest("[data-print-stage]");
+    if (printStage) {
+      const stage = printStage.dataset.printStage;
+      state.print.stages = printStage.checked ? [...new Set([...state.print.stages, stage])] : state.print.stages.filter(item => item !== stage);
+      if (!state.print.stages.length) state.print.stages = [state.activeScaffold?.stage || "sprout"];
+      render();
+      return;
+    }
     const field = event.target.closest("[data-draft-field]");
     if (field) {
       const key = field.dataset.draftField;
@@ -1625,6 +2176,7 @@ Return the finished pupil resource first, followed by the teacher guidance and t
     if (settingSelect) {
       state.settings[settingSelect.dataset.settingSelect] = settingSelect.value;
       writeStore(STORAGE.settings, state.settings);
+      applySettings();
       toast("Default updated.");
     }
     if (event.target.matches("[data-action='import-data']")) importData(event.target.files?.[0]);

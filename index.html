@@ -57,7 +57,7 @@
           <h1 id="section-title">Home</h1>
         </div>
         <div class="topbar-actions">
-          <span class="local-status"><span></span> Saved locally</span>
+          <span class="local-status" id="save-status" aria-live="polite"><span></span><b>Saved</b></span>
           <button class="button button-primary button-compact" data-action="new-scaffold">
             <span data-icon="plus" aria-hidden="true"></span> New scaffold
           </button>
@@ -74,6 +74,8 @@
   <div id="print-root" aria-hidden="true"></div>
 
   <script src="data.js"></script>
+  <script src="build3-data.js"></script>
+  <script src="resource-engine.js"></script>
   <script src="app.js"></script>
 </body>
 </html>
