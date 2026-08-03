@@ -3,13 +3,17 @@
 
   const DATA = window.SCAFFOLD_DATA;
   const RESOURCE = window.ScaffoldResourceEngine;
+  const VERIFY = window.ScaffoldVerificationEngine;
+  const AI = window.ScaffoldAICompanion;
   const STORAGE = {
     library: "scaffold-seeds.library.v1",
     settings: "scaffold-seeds.settings.v1",
     reflections: "scaffold-seeds.reflections.v1",
     draft: "scaffold-seeds.draft.v1",
     archives: "scaffold-seeds.archives.v3",
-    preferences: "scaffold-seeds.preferences.v3"
+    preferences: "scaffold-seeds.preferences.v3",
+    aiWorkspace: "scaffold-seeds.ai-workspace.v4",
+    schema: "scaffold-seeds.schema.v4"
   };
 
   const defaultSettings = {
@@ -30,20 +34,23 @@
     pageNumbers: true,
     schoolLabel: "",
     classLabel: "",
-    terminology: "pupils"
+    terminology: "pupils",
+    aiPromptDepth: "professional",
+    aiIncludeResponseHistory: true
   };
 
   const state = {
     view: "home",
     createStep: 0,
-    library: readStore(STORAGE.library, []),
+    library: migrateLibrary(readStore(STORAGE.library, [])),
     settings: { ...defaultSettings, ...readStore(STORAGE.settings, {}) },
     reflections: readStore(STORAGE.reflections, {}),
     archives: readStore(STORAGE.archives, []),
     preferences: readStore(STORAGE.preferences, { largerWritingArea: false, questionPrompts: false, printMode: "" }),
     draft: normaliseDraft(readStore(STORAGE.draft, null)),
     activeScaffold: null,
-    libraryFilters: { query: "", year: "all", subject: "all", family: "all", format: "all", stage: "all", favourite: false, archived: false, sort: "edited" },
+    libraryFilters: { query: "", year: "all", subject: "all", family: "all", format: "all", stage: "all", aiStatus: "all", source: "all", favourite: false, archived: false, sort: "edited" },
+    librarySelection: [],
     knowledgeSubject: "english",
     knowledgeProfile: "reading",
     knowledgeLens: "ideas",
@@ -64,10 +71,8 @@
     },
     saveStatus: "saved",
     compareStages: false,
-    aiTask: "accurate-examples",
-    aiMode: "full",
-    aiPromptEdit: "",
-    importType: "vocabulary"
+    aiWorkspace: readStore(STORAGE.aiWorkspace, null),
+    aiTaskFamily: "generate"
   };
 
   state.print.paper = state.settings.defaultPaper;
@@ -76,18 +81,23 @@
   state.print.answers = state.settings.includeAnswers;
   state.print.stages = [...state.settings.defaultGrowthStages];
   if (!state.activeScaffold && state.library.length) state.activeScaffold = state.library[0];
+  const activeWorkspaceKey = state.activeScaffold?.id ? `${STORAGE.aiWorkspace}.${state.activeScaffold.id}` : STORAGE.aiWorkspace;
+  const activeWorkspaceSaved = readStore(activeWorkspaceKey, null) || (state.aiWorkspace?.schemaVersion === 4 ? state.aiWorkspace : null);
+  state.aiWorkspace = AI.createWorkspace(state.activeScaffold || {}, activeWorkspaceSaved);
 
   const main = document.getElementById("main-content");
   const modalLayer = document.getElementById("modal-layer");
   const toastRegion = document.getElementById("toast-region");
   const sidebar = document.getElementById("sidebar");
   const scrim = document.getElementById("sidebar-scrim");
+  try { localStorage.setItem(STORAGE.schema, JSON.stringify({ version: 4, migratedAt: new Date().toISOString(), previousLibraryKey: STORAGE.library })); } catch (error) { /* Storage status is surfaced on the first attempted save. */ }
 
   const viewMeta = {
     home: ["Your thinking space", "Home"],
     create: ["Design with purpose", "Create"],
     library: ["Your saved practice", "Library"],
     knowledge: ["Professional knowledge", "Knowledge"],
+    ai: ["Controlled external intelligence", "AI Companion"],
     print: ["Classroom-ready output", "Print Studio"],
     settings: ["Make it yours", "Settings"]
   };
@@ -116,8 +126,70 @@
     close: '<svg viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></svg>',
     up: '<svg viewBox="0 0 24 24"><path d="m6 15 6-6 6 6"/></svg>',
     down: '<svg viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg>',
-    brain: '<svg viewBox="0 0 24 24"><path d="M9.5 4.5A3.5 3.5 0 0 0 6 8v.2A3.5 3.5 0 0 0 4 14a3.5 3.5 0 0 0 5.5 4.5M14.5 4.5A3.5 3.5 0 0 1 18 8v.2a3.5 3.5 0 0 1 2 5.8 3.5 3.5 0 0 1-5.5 4.5M12 3v18M8 11h4M12 15h4"/></svg>'
+    brain: '<svg viewBox="0 0 24 24"><path d="M9.5 4.5A3.5 3.5 0 0 0 6 8v.2A3.5 3.5 0 0 0 4 14a3.5 3.5 0 0 0 5.5 4.5M14.5 4.5A3.5 3.5 0 0 1 18 8v.2a3.5 3.5 0 0 1 2 5.8 3.5 3.5 0 0 1-5.5 4.5M12 3v18M8 11h4M12 15h4"/></svg>',
+    editorial: '<svg viewBox="0 0 24 24"><path d="M5 4h14v16H5zM8 8h8M8 12h8M8 16h5"/><path d="m16 17 4-4 2 2-4 4-3 1z"/></svg>',
+    shield: '<svg viewBox="0 0 24 24"><path d="M12 3 4 6v5c0 5.2 3.3 8.3 8 10 4.7-1.7 8-4.8 8-10V6z"/><path d="m8.5 12 2.2 2.2 4.8-5"/></svg>',
+    compare: '<svg viewBox="0 0 24 24"><path d="M8 4H4v16h4M16 4h4v16h-4M9 8h6M9 12h6M9 16h6"/></svg>',
+    file: '<svg viewBox="0 0 24 24"><path d="M6 2h8l4 4v16H6zM14 2v5h5M9 12h6M9 16h6"/></svg>'
   };
+
+  function migrateLibrary(items) {
+    if (!Array.isArray(items)) return [];
+    return items.filter(item => item && typeof item === "object").map(item => ({
+      ...item,
+      versions: Array.isArray(item.versions) ? item.versions.slice(0, 20) : [],
+      sources: Array.isArray(item.sources) ? item.sources : [],
+      assets: Array.isArray(item.assets) ? item.assets : [],
+      ai: item.ai && typeof item.ai === "object" ? {
+        schemaVersion: 4,
+        rounds: Array.isArray(item.ai.rounds) ? item.ai.rounds.slice(0, 20) : [],
+        provenance: Array.isArray(item.ai.provenance) ? item.ai.provenance.slice(0, 100) : [],
+        ...item.ai
+      } : null
+    }));
+  }
+
+  let aiSaveTimer = null;
+
+  function saveAIWorkspace() {
+    if (aiSaveTimer) clearTimeout(aiSaveTimer);
+    aiSaveTimer = null;
+    state.aiWorkspace.lastSavedAt = new Date().toISOString();
+    if (state.aiWorkspace.resourceId) {
+      writeStore(`${STORAGE.aiWorkspace}.${state.aiWorkspace.resourceId}`, state.aiWorkspace);
+      writeStore(STORAGE.aiWorkspace, { schemaVersion: 4, resourceId: state.aiWorkspace.resourceId, lastSavedAt: state.aiWorkspace.lastSavedAt });
+    } else writeStore(STORAGE.aiWorkspace, state.aiWorkspace);
+  }
+
+  function storedAIWorkspaces(includeRaw = true) {
+    const result = {};
+    const prefix = `${STORAGE.aiWorkspace}.`;
+    for (let index = 0; index < localStorage.length; index += 1) {
+      const key = localStorage.key(index);
+      if (!key?.startsWith(prefix)) continue;
+      const workspace = readStore(key, null);
+      if (!workspace?.resourceId) continue;
+      const copy = JSON.parse(JSON.stringify(workspace));
+      if (!includeRaw) {
+        copy.rawImport = "";
+        if (copy.parsed) copy.parsed.raw = "";
+      }
+      result[workspace.resourceId] = copy;
+    }
+    return result;
+  }
+
+  function scheduleAIWorkspaceSave() {
+    setSaveStatus("unsaved");
+    if (aiSaveTimer) clearTimeout(aiSaveTimer);
+    aiSaveTimer = setTimeout(saveAIWorkspace, 320);
+  }
+
+  function resetAIWorkspace(scaffold = activeForAI()) {
+    state.aiWorkspace = AI.createWorkspace(scaffold || {});
+    state.aiTaskFamily = AI.taskById(state.aiWorkspace.options.taskId).family;
+    saveAIWorkspace();
+  }
 
   function readStore(key, fallback) {
     try {
@@ -200,7 +272,6 @@
       format: saved?.format || "workpage",
       growthStages: saved?.growthStages || ["seed", "sprout", "growth", "independent"],
       teacherNotes: saved?.teacherNotes || "",
-      aiTask: saved?.aiTask || "accurate-examples",
       editingId: saved?.editingId || null
     };
   }
@@ -242,6 +313,10 @@
 
   function engineById(id) {
     return DATA.engines.find(engine => engine.id === id) || DATA.engines[0];
+  }
+
+  function stageById(id) {
+    return DATA.stages.find(stage => stage.id === id) || DATA.stages[1];
   }
 
   function barrierById(id) {
@@ -333,7 +408,7 @@
   }
 
   function render() {
-    const renderers = { home: renderHome, create: renderCreate, library: renderLibrary, knowledge: renderKnowledge, print: renderPrintStudio, settings: renderSettings };
+    const renderers = { home: renderHome, create: renderCreate, library: renderLibrary, knowledge: renderKnowledge, ai: renderAIStudio, print: renderPrintStudio, settings: renderSettings };
     main.innerHTML = `<div class="view-enter">${renderers[state.view]()}</div>`;
     hydrateIcons(main);
   }
@@ -353,6 +428,7 @@
   function newScaffold(preset = {}) {
     state.draft = normaliseDraft({ year: state.settings.typicalYear, ...preset, stage: preset.stage || state.settings.defaultStage, content: { density: state.settings.preferredDensity, responseSpace: state.preferences.largerWritingArea ? "large" : "standard", ...(preset.content || {}) } });
     state.activeScaffold = null;
+    resetAIWorkspace({ ...state.draft, id: "", engineId: state.draft.engineId || DATA.engines[0].id });
     state.createStep = 0;
     saveDraft();
     navigate("create");
@@ -365,12 +441,16 @@
     const favouriteEngineIds = [...new Set(state.library.filter(item => item.favourite).map(item => item.engineId))];
     ["reasoning-ladder", "worked-example", "vocabulary-builder"].forEach(id => { if (favouriteEngineIds.length < 3 && !favouriteEngineIds.includes(id)) favouriteEngineIds.push(id); });
     const favouriteEngines = favouriteEngineIds.slice(0, 3).map(engineById);
+    const reviewResources = state.library.filter(item => ["review-required", "warnings-unresolved", "response-imported"].includes(AI.statusForResource(item)));
+    const approvedResources = state.library.filter(item => ["teacher-approved", "print-ready"].includes(AI.statusForResource(item)));
+    const promptRounds = state.library.flatMap(item => (item.ai?.rounds || []).map(round => ({ ...round, resourceId: item.id, resourceTitle: item.title }))).sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+    const favouriteTasks = [...new Set(promptRounds.map(round => round.taskId))].slice(0, 3).map(AI.taskById);
     const recentHTML = recent.length
       ? `<div class="recent-list">${recent.map(item => `
           <button class="recent-row" data-action="open-scaffold" data-id="${esc(item.id)}">
             <span class="recent-symbol">${icon("create")}</span>
             <span><h4>${esc(item.title)}</h4><p>${esc(item.year)} · ${esc(subjectById(item.subject).name)} · ${esc(engineById(item.engineId).name)}</p></span>
-            <span class="quiet-note">${relativeDate(item.updatedAt)}</span>
+            <span class="recent-meta"><small class="resource-status status-${esc(AI.statusForResource(item))}">${esc(DATA.ai.statuses.find(status => status.id === AI.statusForResource(item))?.name || "Local draft")}</small><span class="quiet-note">${relativeDate(item.updatedAt)}</span></span>
           </button>`).join("")}</div>`
       : `<div class="empty-help"><span class="empty-mark">${icon("create")}</span><h4>Your first seed starts here</h4><p>Describe one place where pupils are getting stuck. The library will grow naturally as you save useful supports.</p><button class="button button-soft" data-action="new-scaffold">Create your first scaffold</button></div>`;
 
@@ -423,6 +503,13 @@
             <span class="eyebrow">Today’s inspiration</span>
             <blockquote>${esc(inspiration.quote)}</blockquote>
             <cite>${esc(inspiration.note)}</cite>
+          </section>
+
+          <section class="panel panel-pad ai-home-quiet">
+            <div class="panel-header"><div><h3>Editorial review</h3><p>Optional AI activity, kept secondary to scaffold design</p></div></div>
+            <div class="ai-home-stats"><button data-view="library" data-ai-home-filter="review"><strong>${reviewResources.length}</strong><span>need review</span></button><button data-view="library" data-ai-home-filter="approved"><strong>${approvedResources.length}</strong><span>approved</span></button><button data-view="ai"><strong>${promptRounds.length}</strong><span>prompt rounds</span></button></div>
+            ${reviewResources.length ? `<button class="ai-review-row" data-action="open-ai" data-id="${esc(reviewResources[0].id)}"><span>${icon("shield")}</span><span><strong>Continue ${esc(reviewResources[0].title)}</strong><small>${esc(DATA.ai.statuses.find(status => status.id === AI.statusForResource(reviewResources[0]))?.name || "Review required")}</small></span>${icon("arrow")}</button>` : `<p class="quiet-note ai-home-note">No imported content is waiting. Local-only creation remains fully available.</p>`}
+            ${favouriteTasks.length ? `<div class="favourite-ai-tasks"><span>Recent tasks</span>${favouriteTasks.map(task => `<button data-action="ai-template-task" data-id="${task.id}">${esc(task.name)}</button>`).join("")}</div>` : ""}
           </section>
 
           <section class="panel panel-pad">
@@ -660,17 +747,11 @@
 
   function renderOutputStep() {
     const scaffold = state.activeScaffold || scaffoldFromDraft();
-    const prompt = state.aiPromptEdit || createAIPrompt(scaffold, state.aiTask, state.aiMode);
-    const aiTask = DATA.aiTasks.find(item => item.id === state.aiTask) || DATA.aiTasks[0];
-    return `${createHead(7, "Use, save or enhance", "The local resource is complete. External AI is optional and receives only the professional brief you choose to copy.")}
+    const aiStatus = AI.statusForResource(scaffold);
+    return `${createHead(7, "Use, save or enhance", "The local resource is complete. Print it now, or invite external AI to contribute to one carefully bounded content slot.")}
       <div class="create-card-body output-workspace">
         <section class="output-actions"><div class="output-action-card"><span>${icon("check")}</span><div><h3>Save the classroom resource</h3><p>Create a deliberate local checkpoint with all four growth stages.</p></div><button class="button button-primary" data-action="save-scaffold">Save to library</button></div><div class="output-action-card"><span>${icon("print")}</span><div><h3>Print or make a mixed pack</h3><p>Convert the structure into ${DATA.printFormats.length} classroom formats.</p></div><button class="button" data-action="open-print">Open Print Studio 3</button></div></section>
-        <section class="ai-export-studio"><div class="ai-export-head"><div><span class="eyebrow">AI Companion 3 · nothing sent automatically</span><h3>Professional enhancement brief</h3><p>Keep the scaffold architecture and protected thinking fixed. Ask external AI for one bounded contribution.</p></div><div class="ai-mode-switch"><button class="${state.aiMode === "compact" ? "is-active" : ""}" data-action="ai-mode" data-id="compact">Compact</button><button class="${state.aiMode === "full" ? "is-active" : ""}" data-action="ai-mode" data-id="full">Full</button></div></div>
-          <div class="ai-task-row"><label for="ai-task">External AI task</label><select id="ai-task" data-ai-task>${DATA.aiTasks.map(item => `<option value="${item.id}" ${item.id === aiTask.id ? "selected" : ""}>${esc(item.name)}</option>`).join("")}</select><button class="button button-compact" data-action="reset-ai-prompt">Regenerate from scaffold</button></div>
-          <textarea id="ai-prompt-output" class="prompt-output prompt-workspace" data-ai-prompt-edit>${esc(prompt)}</textarea>
-          <div class="ai-export-actions"><span class="quiet-note">Inspect and edit every line before copying.</span><button class="button button-primary" data-action="copy-ai-prompt"><span data-icon="copy"></span> Copy ${esc(state.aiMode)} prompt</button></div>
-        </section>
-        <section class="controlled-import"><div><span class="eyebrow">Controlled content importer</span><h3>Bring useful text back safely</h3><p>Plain text only. Imported HTML and executable content are stripped before placement.</p></div><div class="import-grid"><select data-import-type><option value="vocabulary" ${state.importType === "vocabulary" ? "selected" : ""}>Vocabulary</option><option value="examples" ${state.importType === "examples" ? "selected" : ""}>Examples</option><option value="questions" ${state.importType === "questions" ? "selected" : ""}>Questions</option><option value="passage" ${state.importType === "passage" ? "selected" : ""}>Short passage</option><option value="scenarios" ${state.importType === "scenarios" ? "selected" : ""}>Scenario cards</option><option value="teacher-notes" ${state.importType === "teacher-notes" ? "selected" : ""}>Teacher notes</option></select><textarea id="controlled-import-text" rows="5" placeholder="Paste plain text here…"></textarea><button class="button" data-action="import-controlled-content">Sanitise and place into scaffold</button></div></section>
+        <section class="ai-editorial-invite"><div class="editorial-mark">${icon("editorial")}</div><div><span class="eyebrow">AI Companion 4 · optional and provider-neutral</span><h3>Invite one specialist contribution</h3><p>Scaffold Seeds keeps the objective, protected thinking, scaffold engine, fading pathway and print layout. External AI may contribute examples, passages, questions, critique or verification—never the whole resource.</p><div class="editorial-principle"><span>Scaffold Seeds designs</span><i></i><span>External AI contributes</span><i></i><span>You judge</span><i></i><span>Scaffold Seeds rebuilds</span></div></div><aside><span class="resource-status status-${esc(aiStatus)}">${esc(DATA.ai.statuses.find(status => status.id === aiStatus)?.name || "Local draft")}</span><button class="button button-primary" data-action="open-ai"><span data-icon="editorial"></span> Open AI Companion</button><small>Nothing is sent automatically.</small></aside></section>
       </div>${stepFooter({ nextLabel: "Start a new scaffold", nextAction: "start-again", extra: '<button class="button" data-action="edit-design">Return to designer</button>' })}`;
   }
 
@@ -1003,20 +1084,23 @@
       .filter(item => filters.family === "all" || (item.familyId || engineById(item.engineId).family) === filters.family)
       .filter(item => filters.format === "all" || item.format === filters.format)
       .filter(item => filters.stage === "all" || (item.growthStages || [item.stage]).includes(filters.stage))
+      .filter(item => filters.aiStatus === "all" || (filters.aiStatus === "needs-review" ? ["response-imported", "review-required", "warnings-unresolved"].includes(AI.statusForResource(item)) : filters.aiStatus === "approved" ? ["teacher-approved", "print-ready"].includes(AI.statusForResource(item)) : AI.statusForResource(item) === filters.aiStatus))
+      .filter(item => filters.source === "all" || (filters.source === "attached" ? (item.sources || []).length > 0 : (item.sources || []).length === 0))
       .filter(item => !filters.favourite || item.favourite)
       .sort((a, b) => filters.sort === "printed" ? new Date(b.lastPrintedAt || 0) - new Date(a.lastPrintedAt || 0) : filters.sort === "title" ? a.title.localeCompare(b.title) : new Date(b.updatedAt) - new Date(a.updatedAt));
     const cards = filtered.map(item => `
       <article class="library-card">
-        <div class="library-thumb"><div class="mini-paper"></div><button class="favourite-button ${item.favourite ? "is-active" : ""}" data-action="toggle-favourite" data-id="${esc(item.id)}" aria-label="${item.favourite ? "Remove from" : "Add to"} favourites" aria-pressed="${item.favourite}">${icon("heart")}</button></div>
+        <div class="library-thumb"><div class="mini-paper"></div><label class="library-select"><input type="checkbox" data-library-select="${esc(item.id)}" ${state.librarySelection.includes(item.id) ? "checked" : ""}><span>Select</span></label><span class="library-ai-status resource-status status-${esc(AI.statusForResource(item))}">${esc(aiStatusName(item))}</span><button class="favourite-button ${item.favourite ? "is-active" : ""}" data-action="toggle-favourite" data-id="${esc(item.id)}" aria-label="${item.favourite ? "Remove from" : "Add to"} favourites" aria-pressed="${item.favourite}">${icon("heart")}</button></div>
         <div class="library-card-body"><div class="library-card-title"><h3 title="${esc(item.title)}">${esc(item.title)}</h3><button class="text-link" data-action="rename-scaffold" data-id="${esc(item.id)}">Rename</button></div><p>${esc(item.year)} · ${esc(subjectById(item.subject).name)} · ${esc(engineById(item.engineId).name)}</p>
           <dl class="library-facts"><div><dt>Sticking point</dt><dd>${esc((item.customBarrier || item.situation || "Not recorded").slice(0, 110))}</dd></div><div><dt>Growth pathway</dt><dd>${esc((item.growthStages || DATA.stages.map(stage => stage.id)).map(titleCase).join(" · "))}</dd></div><div><dt>Formats</dt><dd>${esc(printFormatById(item.format || "workpage").name)} · ${esc((engineById(item.engineId).formats || []).slice(0, 2).map(id => printFormatById(id).name).join(" · "))}</dd></div></dl>
-          <div class="tag-row"><span class="tag">Edited ${relativeDate(item.updatedAt)}</span>${item.reflection ? '<span class="tag tag-reflected">Reflected</span>' : ""}${item.versions?.length ? `<span class="tag">${item.versions.length} version${item.versions.length === 1 ? "" : "s"}</span>` : ""}${(item.tags || []).slice(0, 2).map(tag => `<span class="tag">${esc(tag)}</span>`).join("")}</div>
-          <div class="card-actions"><button class="button" data-action="open-scaffold" data-id="${esc(item.id)}"><span data-icon="eye"></span> Open</button><button class="icon-button" data-action="show-versions" data-id="${esc(item.id)}" aria-label="View version history for ${esc(item.title)}">${icon("copy")}</button><button class="icon-button" data-action="record-use-reflection" data-id="${esc(item.id)}" aria-label="Reflect after using ${esc(item.title)}">${icon("brain")}</button><button class="icon-button" data-action="duplicate-scaffold" data-id="${esc(item.id)}" aria-label="Duplicate ${esc(item.title)}">${icon("plus")}</button><button class="icon-button" data-action="${item.archived ? "restore-scaffold" : "archive-scaffold"}" data-id="${esc(item.id)}" aria-label="${item.archived ? "Restore" : "Archive"} ${esc(item.title)}">${item.archived ? icon("upload") : icon("download")}</button>${item.archived ? `<button class="icon-button" data-action="delete-scaffold" data-id="${esc(item.id)}" aria-label="Permanently delete ${esc(item.title)}">${icon("trash")}</button>` : ""}</div>
+          <div class="tag-row"><span class="tag">Edited ${relativeDate(item.updatedAt)}</span>${item.ai?.rounds?.length ? `<span class="tag tag-ai">${item.ai.rounds.length} AI round${item.ai.rounds.length === 1 ? "" : "s"}</span>` : ""}${(item.sources || []).length ? '<span class="tag">Source attached</span>' : ""}${item.reflection ? '<span class="tag tag-reflected">Reflected</span>' : ""}${item.versions?.length ? `<span class="tag">${item.versions.length} version${item.versions.length === 1 ? "" : "s"}</span>` : ""}${(item.tags || []).slice(0, 2).map(tag => `<span class="tag">${esc(tag)}</span>`).join("")}</div>
+          <div class="card-actions"><button class="button" data-action="open-scaffold" data-id="${esc(item.id)}"><span data-icon="eye"></span> Open</button><button class="icon-button" data-action="open-ai" data-id="${esc(item.id)}" aria-label="Open AI Companion for ${esc(item.title)}">${icon("editorial")}</button><button class="icon-button" data-action="show-versions" data-id="${esc(item.id)}" aria-label="View version history for ${esc(item.title)}">${icon("copy")}</button><button class="icon-button" data-action="record-use-reflection" data-id="${esc(item.id)}" aria-label="Reflect after using ${esc(item.title)}">${icon("brain")}</button><button class="icon-button" data-action="duplicate-scaffold" data-id="${esc(item.id)}" aria-label="Duplicate ${esc(item.title)}">${icon("plus")}</button><button class="icon-button" data-action="${item.archived ? "restore-scaffold" : "archive-scaffold"}" data-id="${esc(item.id)}" aria-label="${item.archived ? "Restore" : "Archive"} ${esc(item.title)}">${item.archived ? icon("upload") : icon("download")}</button>${item.archived ? `<button class="icon-button" data-action="delete-scaffold" data-id="${esc(item.id)}" aria-label="Permanently delete ${esc(item.title)}">${icon("trash")}</button>` : ""}</div>
         </div>
       </article>`).join("");
     return `
-      <div class="page-heading"><div><span class="eyebrow">Saved on this device · Build 3</span><h2>${filters.archived ? "Archived scaffolds" : "Your scaffold library"}</h2><p>Search the learning decision, not a filename. Reuse, reflect, restore and deliberately checkpoint meaningful versions.</p></div><button class="button button-primary" data-action="new-scaffold"><span data-icon="plus"></span> New scaffold</button></div>
+      <div class="page-heading"><div><span class="eyebrow">Saved on this device · Build 4</span><h2>${filters.archived ? "Archived scaffolds" : "Your scaffold library"}</h2><p>Local and AI-assisted resources share one calm library. Status, provenance and unresolved review remain visible without cluttering pupil pages.</p></div><button class="button button-primary" data-action="new-scaffold"><span data-icon="plus"></span> New scaffold</button></div>
       <div class="library-view-tabs"><button class="${!filters.archived ? "is-active" : ""}" data-action="library-view" data-id="active">Current <span>${state.library.filter(item => !item.archived).length}</span></button><button class="${filters.archived ? "is-active" : ""}" data-action="library-view" data-id="archived">Archive <span>${state.library.filter(item => item.archived).length}</span></button></div>
+      ${state.librarySelection.length ? `<div class="library-batch"><strong>${state.librarySelection.length} selected</strong><button class="button button-compact" data-action="batch-export">Export</button><button class="button button-compact" data-action="batch-reviewed">Mark reviewed</button><button class="button button-compact" data-action="batch-archive">${filters.archived ? "Restore" : "Archive"}</button><button class="text-link" data-action="batch-clear">Clear selection</button><small>Resources with unresolved high-risk findings cannot be bulk approved.</small></div>` : ""}
       <div class="toolbar library-toolbar">
         <label class="search-field"><span data-icon="search"></span><input class="input" id="library-search" data-library-filter="query" value="${esc(filters.query)}" placeholder="Search titles, objectives or tags"><span class="visually-hidden"></span></label>
         <select data-library-filter="year" aria-label="Filter by year"><option value="all">All years</option>${DATA.years.map(year => `<option ${year === filters.year ? "selected" : ""}>${esc(year)}</option>`).join("")}</select>
@@ -1024,6 +1108,8 @@
         <select data-library-filter="family" aria-label="Filter by scaffold family"><option value="all">All families</option>${DATA.scaffoldFamilies.map(family => `<option value="${family.id}" ${family.id === filters.family ? "selected" : ""}>${esc(family.name)}</option>`).join("")}</select>
         <select data-library-filter="format" aria-label="Filter by classroom format"><option value="all">All formats</option>${DATA.printFormats.map(format => `<option value="${format.id}" ${format.id === filters.format ? "selected" : ""}>${esc(format.name)}</option>`).join("")}</select>
         <select data-library-filter="stage" aria-label="Filter by growth stage"><option value="all">All growth stages</option>${DATA.stages.map(stage => `<option value="${stage.id}" ${stage.id === filters.stage ? "selected" : ""}>${esc(stage.name)}</option>`).join("")}</select>
+        <select data-library-filter="aiStatus" aria-label="Filter by AI review status"><option value="all">All review states</option><option value="needs-review" ${filters.aiStatus === "needs-review" ? "selected" : ""}>Needs review</option><option value="approved" ${filters.aiStatus === "approved" ? "selected" : ""}>Approved or print ready</option>${DATA.ai.statuses.map(status => `<option value="${status.id}" ${status.id === filters.aiStatus ? "selected" : ""}>${esc(status.name)}</option>`).join("")}</select>
+        <select data-library-filter="source" aria-label="Filter by source record"><option value="all" ${filters.source === "all" ? "selected" : ""}>Any source state</option><option value="attached" ${filters.source === "attached" ? "selected" : ""}>Source attached</option><option value="none" ${filters.source === "none" ? "selected" : ""}>No source attached</option></select>
         <select data-library-filter="sort" aria-label="Sort library"><option value="edited" ${filters.sort === "edited" ? "selected" : ""}>Recently edited</option><option value="printed" ${filters.sort === "printed" ? "selected" : ""}>Recently printed</option><option value="title" ${filters.sort === "title" ? "selected" : ""}>Title</option></select>
         <button class="button ${filters.favourite ? "button-soft" : ""}" data-action="filter-favourites" aria-pressed="${filters.favourite}">${icon("heart")} Favourites</button>
       </div>
@@ -1072,6 +1158,402 @@
       <article class="knowledge-card"><h4>Knowledge types</h4><p>What pupils may need to know and coordinate here.</p><div class="knowledge-pills">${brain.knowledgeTypes.map(item => `<span class="knowledge-pill">${esc(item)}</span>`).join("")}</div></article>
       <article class="knowledge-card"><h4>High-leverage vocabulary</h4><p>Teach form, meaning, connection and use—not a detached glossary.</p><div class="knowledge-pills">${profile.vocabulary.map(item => `<span class="knowledge-pill word-pill">${esc(item)}</span>`).join("")}</div></article>
       <article class="knowledge-card"><h4>What strong scaffolding protects</h4><p>These principles are used by the recommendation and quality systems.</p><div class="knowledge-pills">${subject.principles.map(item => `<span class="knowledge-pill">${esc(item)}</span>`).join("")}</div></article>`;
+  }
+
+  function activeForAI() {
+    return state.activeScaffold || state.library.find(item => !item.archived) || null;
+  }
+
+  function ensureAIWorkspace(scaffold = activeForAI(), force = false) {
+    if (!scaffold) return null;
+    if (force || !state.aiWorkspace || state.aiWorkspace.resourceId !== scaffold.id) {
+      const saved = readStore(`${STORAGE.aiWorkspace}.${scaffold.id}`, null)
+        || (!force && state.aiWorkspace?.resourceId === scaffold.id ? state.aiWorkspace : null);
+      state.aiWorkspace = AI.createWorkspace(scaffold, saved);
+      state.aiTaskFamily = AI.taskById(state.aiWorkspace.options.taskId).family;
+      saveAIWorkspace();
+    }
+    return state.aiWorkspace;
+  }
+
+  function aiStatusName(resource) {
+    const id = AI.statusForResource(resource);
+    return DATA.ai.statuses.find(status => status.id === id)?.name || "Local draft";
+  }
+
+  function updateAIResourceStatus(status, extras = {}) {
+    const scaffold = activeForAI();
+    if (!scaffold) return;
+    scaffold.ai = { ...(scaffold.ai || {}), schemaVersion: 4, rounds: scaffold.ai?.rounds || [], provenance: scaffold.ai?.provenance || [], status, ...extras };
+    const index = state.library.findIndex(item => item.id === scaffold.id);
+    if (index >= 0) state.library[index] = scaffold;
+    state.activeScaffold = scaffold;
+    writeStore(STORAGE.library, state.library);
+  }
+
+  function renderAIStudio() {
+    const scaffold = activeForAI();
+    if (!scaffold) {
+      return `<div class="page-heading"><div><span class="eyebrow">Controlled external intelligence</span><h2>AI Companion</h2><p>Design a complete local scaffold before inviting an external content contribution.</p></div></div><div class="empty-help"><span class="empty-mark">${icon("editorial")}</span><h4>Scaffold Seeds designs first</h4><p>Create the learning, barrier, protected thinking and scaffold structure locally. AI Companion will then know exactly what may—and may not—change.</p><button class="button button-primary" data-action="new-scaffold">Create a scaffold</button></div>`;
+    }
+    const workspace = ensureAIWorkspace(scaffold);
+    const phases = [
+      ["task", "1", "Request"], ["prompt", "2", "Prepare"], ["import", "3", "Return"], ["review", "4", "Review"], ["verify", "5", "Verify & rebuild"]
+    ];
+    const phaseIndex = phases.findIndex(([id]) => id === workspace.phase);
+    const content = { task: renderAITaskPhase, prompt: renderAIPromptPhase, import: renderAIImportPhase, review: renderAIReviewPhase, verify: renderAIVerifyPhase }[workspace.phase](scaffold, workspace);
+    const stage = stageById(scaffold.stage);
+    const engine = engineById(scaffold.engineId);
+    return `<div class="page-heading ai-page-heading"><div><span class="eyebrow">AI Companion 4 · careful editorial exchange</span><h2>External range. Local control.</h2><p>Invite one narrow contribution, bring it back as inert content, inspect every change, then rebuild it inside Scaffold Seeds.</p></div><div class="local-only-badge">${icon("shield")}<span><strong>Nothing sent automatically</strong><small>No API, account or backend</small></span></div></div>
+      <div class="ai-progress" role="navigation" aria-label="AI enhancement workflow">${phases.map(([id, number, label], index) => `<button class="${workspace.phase === id ? "is-active" : index < phaseIndex ? "is-complete" : ""}" data-action="ai-phase" data-id="${id}" ${index > 0 && !workspace.prompt ? "disabled" : index > 2 && !workspace.parsed ? "disabled" : ""}><span>${index < phaseIndex ? "✓" : number}</span><strong>${label}</strong></button>`).join("")}</div>
+      <div class="ai-studio-layout">
+        <aside class="ai-context-rail">
+          <span class="resource-status status-${esc(AI.statusForResource(scaffold))}">${esc(aiStatusName(scaffold))}</span>
+          <div class="ai-resource-summary"><span class="eyebrow">Current local scaffold</span><h3>${esc(scaffold.title)}</h3><p>${esc(scaffold.year)} · ${esc(subjectById(scaffold.subject).name)}</p><dl><div><dt>Objective</dt><dd>${esc(scaffold.objective)}</dd></div><div><dt>Engine</dt><dd>${esc(engine.name)}</dd></div><div><dt>Support now</dt><dd>${esc(stage.name)}</dd></div></dl></div>
+          <div class="protected-rail"><span>${icon("shield")}</span><div><strong>Protected pupil thinking</strong><p>${esc(scaffold.essentialThinking || scaffold.disciplinaryThinking)}</p></div></div>
+          <div class="ai-boundary"><strong>The boundary</strong><p>AI may contribute content. It cannot control page geometry, fonts, stage labels, diagrams, hierarchy or the removal pathway.</p></div>
+          <button class="text-link" data-action="edit-design">← Return to local designer</button>
+        </aside>
+        <section class="ai-workbench">${content}</section>
+      </div>`;
+  }
+
+  function renderAISpecialistControls(task, options) {
+    const passageTasks = ["reading-passage", "information-text", "background-knowledge"];
+    const questionTasks = ["practice-questions", "reasoning-prompts", "retrieval-questions", "extension", "challenge-pathway", "independence-check"];
+    const exampleTasks = ["accurate-examples", "non-examples", "alternative-examples", "misconception-contrast"];
+    const modelTasks = ["model-responses", "flawed-responses"];
+    const misconceptionTasks = ["misconceptions", "misconception-contrast", "critique-misconceptions"];
+    const vocabularyTasks = ["vocabulary-set", "verify-vocabulary"];
+    let fields = "";
+    let title = "";
+    let note = "";
+    if (passageTasks.includes(task.id)) {
+      title = "Reading passage studio";
+      note = "Set purpose and knowledge demand without reducing reading quality to one score.";
+      fields = `<label><span>Text type</span><input class="input" data-ai-option="textType" value="${esc(options.textType)}" placeholder="information text, narrative, explanation…"></label><label><span>Curriculum purpose</span><select data-ai-option="passagePurpose"><option ${options.passagePurpose === "subject access" ? "selected" : ""}>subject access</option><option ${options.passagePurpose === "reading instruction" ? "selected" : ""}>reading instruction</option><option ${options.passagePurpose === "fluency practice" ? "selected" : ""}>fluency practice</option></select></label><label><span>Version requested</span><select data-ai-option="passageVersion"><option ${options.passageVersion === "original" ? "selected" : ""}>original</option><option ${options.passageVersion === "clearer language" ? "selected" : ""}>clearer language</option><option ${options.passageVersion === "chunked" ? "selected" : ""}>chunked</option><option ${options.passageVersion === "read-aloud support" ? "selected" : ""}>read-aloud support</option><option ${options.passageVersion === "vocabulary-supported" ? "selected" : ""}>vocabulary-supported</option></select></label><label><span>Vocabulary focus</span><input class="input" data-ai-option="vocabularyFocus" value="${esc(options.vocabularyFocus)}" placeholder="Words to include and explain"></label><label class="span-2"><span>Background knowledge assumed</span><textarea data-ai-option="assumedKnowledge" rows="2" placeholder="What readers may already know…">${esc(options.assumedKnowledge)}</textarea></label>`;
+    } else if (questionTasks.includes(task.id)) {
+      title = "Question generation studio";
+      note = "Lock purpose, response and progression before generating practice.";
+      fields = `<label><span>Question purpose</span><select data-ai-option="questionPurpose">${["retrieval", "fluency", "application", "reasoning", "explanation", "comparison", "misconception diagnosis", "independent check", "extension"].map(value => `<option ${options.questionPurpose === value ? "selected" : ""}>${esc(value)}</option>`).join("")}</select></label><label><span>Response type</span><input class="input" data-ai-option="responseType" value="${esc(options.responseType)}" placeholder="short explanation, oral, selection…"></label><label><span>Difficulty pattern</span><input class="input" data-ai-option="difficultyPattern" value="${esc(options.difficultyPattern)}" placeholder="e.g. build then vary"></label><label><span>Context range</span><input class="input" data-ai-option="contextRange" value="${esc(options.contextRange)}"></label><label><span>Answer requirements</span><input class="input" data-ai-option="answerRequirements" value="${esc(options.answerRequirements)}"></label><label><span>Misconception focus</span><input class="input" data-ai-option="misconceptionFocus" value="${esc(options.misconceptionFocus)}" placeholder="Optional diagnostic focus"></label>`;
+    } else if (exampleTasks.includes(task.id)) {
+      title = "Example and non-example studio";
+      note = "Vary surface features while protecting the concept boundary.";
+      fields = `<label class="span-2"><span>Defining feature</span><textarea data-ai-option="coreFeature" rows="2" placeholder="The feature every example must preserve…">${esc(options.coreFeature)}</textarea></label><label class="span-2"><span>Variation plan</span><textarea data-ai-option="variationPattern" rows="2">${esc(options.variationPattern)}</textarea></label>`;
+    } else if (modelTasks.includes(task.id)) {
+      title = "Model response studio";
+      note = "Choose the teaching purpose and how much pupils should see.";
+      fields = `<label><span>Model purpose</span><select data-ai-option="modelPurpose">${["noticing quality", "identifying success", "finding misconceptions", "editing", "comparing explanations", "discussing authorial choices"].map(value => `<option ${options.modelPurpose === value ? "selected" : ""}>${esc(value)}</option>`).join("")}</select></label><label><span>Model type</span><select data-ai-option="modelType">${["strong and partial contrast", "strong model", "partial model", "flawed model", "improved model", "annotated model", "oral model"].map(value => `<option ${options.modelType === value ? "selected" : ""}>${esc(value)}</option>`).join("")}</select></label><label><span>Reveal guidance</span><input class="input" data-ai-option="revealAmount" value="${esc(options.revealAmount)}"></label>`;
+    } else if (misconceptionTasks.includes(task.id)) {
+      title = "Misconception studio";
+      note = "Separate a conceptual model from an error, slip or missing prerequisite.";
+      fields = `<label class="span-2"><span>Observed misconception or response</span><textarea data-ai-option="observedMisconception" rows="2" placeholder="Leave blank for cautious candidates…">${esc(options.observedMisconception)}</textarea></label><label><span>Current classification</span><select data-ai-option="misconceptionKind">${["not yet classified", "conceptual misconception", "procedural error", "language misunderstanding", "careless slip", "missing prerequisite knowledge"].map(value => `<option ${options.misconceptionKind === value ? "selected" : ""}>${esc(value)}</option>`).join("")}</select></label>`;
+    } else if (vocabularyTasks.includes(task.id)) {
+      title = "Vocabulary verification studio";
+      note = "Keep rich teacher knowledge separate from the small pupil-facing selection.";
+      fields = `<label class="span-2"><span>Words or concept focus</span><textarea data-ai-option="vocabularyFocus" rows="2" placeholder="Enter exact words, or use the selected local vocabulary…">${esc(options.vocabularyFocus)}</textarea></label><label><span>Detail balance</span><select data-ai-option="vocabularyDetail"><option ${options.vocabularyDetail === "full teacher record; concise pupil selection" ? "selected" : ""}>full teacher record; concise pupil selection</option><option ${options.vocabularyDetail === "definitions and examples only" ? "selected" : ""}>definitions and examples only</option><option ${options.vocabularyDetail === "morphology and multiple meanings" ? "selected" : ""}>morphology and multiple meanings</option></select></label>`;
+    } else if (task.id === "teacher-modelling") {
+      title = "Teacher modelling generator";
+      note = "A useful think-aloud is concise and stops before it owns the pupil's decision.";
+      fields = `<label><span>Deliberate mistake</span><select data-ai-option="modellingMistake"><option ${options.modellingMistake === "include only if instructionally useful" ? "selected" : ""}>include only if instructionally useful</option><option ${options.modellingMistake === "include one plausible mistake" ? "selected" : ""}>include one plausible mistake</option><option ${options.modellingMistake === "do not include a mistake" ? "selected" : ""}>do not include a mistake</option></select></label><label><span>Maximum script words</span><input class="input" type="number" min="60" max="300" value="${Number(options.modellingLimit) || 140}" data-ai-option="modellingLimit"></label>`;
+    }
+    if (!fields) return "";
+    return `<section class="ai-specialist-controls"><div class="section-heading"><div><span class="eyebrow">Focused configuration</span><h4>${esc(title)}</h4><p>${esc(note)}</p></div></div><div class="ai-control-grid">${fields}</div></section>`;
+  }
+
+  function renderImageChecks(image) {
+    const analysis = image?.analysis;
+    if (!analysis) return '<section class="image-analysis"><strong>Local image checks pending</strong><span>Contrast, ink coverage and print size will be sampled in this browser.</span></section>';
+    const warnings = [];
+    if (analysis.contrast === "low") warnings.push("Low tonal separation: check important details in greyscale before printing.");
+    if (analysis.inkCoverage > 45) warnings.push("High estimated ink coverage: crop or lighten the image for photocopying.");
+    if (analysis.printWidthMm < 75 || analysis.printHeightMm < 50) warnings.push("Limited print resolution: keep this image small to avoid softness.");
+    return '<section class="image-analysis ' + (warnings.length ? 'needs-review' : 'is-clear') + '"><div><strong>Local image checks</strong><span>Pattern-based guidance—not a guarantee of print quality.</span></div><dl><div><dt>Contrast</dt><dd>' + esc(titleCase(analysis.contrast)) + ' tonal range</dd></div><div><dt>Ink</dt><dd>' + analysis.inkCoverage + '% estimated coverage</dd></div><div><dt>Print size</dt><dd>about ' + analysis.printWidthMm + ' × ' + analysis.printHeightMm + ' mm at 300 ppi</dd></div></dl>' + (warnings.length ? '<ul>' + warnings.map(item => '<li>' + esc(item) + '</li>').join('') + '</ul>' : '<p>No obvious local image warning. Confirm the final print preview yourself.</p>') + '</section>';
+  }
+
+  function renderAITaskPhase(scaffold, workspace) {
+    const options = workspace.options;
+    const engine = engineById(scaffold.engineId);
+    const compatible = new Set(engine.ai?.compatibleTasks || []);
+    const family = DATA.ai.taskFamilies.find(item => item.id === state.aiTaskFamily) || DATA.ai.taskFamilies[0];
+    const tasks = DATA.aiTasks.filter(task => task.family === family.id).sort((a, b) => Number(compatible.has(b.id)) - Number(compatible.has(a.id)) || a.name.localeCompare(b.name));
+    const selected = AI.taskById(options.taskId);
+    const templates = DATA.ai.templates.filter(template => template.subjects.includes("all") || template.subjects.includes(scaffold.subject));
+    const knowledge = [["prerequisites", "Prior learning"], ["vocabulary", "Vocabulary"], ["misconceptions", "Misconceptions"], ["progression", "Progression notes"], ["representations", "Representation guidance"]];
+    return `<div class="ai-phase-head"><span class="phase-number">01</span><div><span class="eyebrow">Design locally · request narrowly</span><h3>Choose one useful contribution</h3><p>Every option states what changes and what remains untouched. Compatible tasks are shown first.</p></div></div>
+      <section class="ai-templates"><div class="section-heading"><div><h4>Starting configurations</h4><p>These configure the prompt engine; they do not insert generic content.</p></div></div><div class="ai-template-strip">${templates.map(template => `<button data-action="ai-template" data-id="${template.id}"><span>${icon("file")}</span><strong>${esc(template.name)}</strong><small>${esc(titleCase(template.depth))} · ${template.quantity} item${template.quantity === 1 ? "" : "s"}</small></button>`).join("")}</div></section>
+      <section class="ai-task-selector"><div class="ai-family-tabs" role="tablist">${DATA.ai.taskFamilies.map(item => `<button class="${item.id === family.id ? "is-active" : ""}" data-action="ai-family" data-id="${item.id}" role="tab" aria-selected="${item.id === family.id}"><strong>${esc(item.name)}</strong><small>${esc(item.description)}</small></button>`).join("")}</div><div class="ai-task-grid">${tasks.map(task => `<button class="ai-task-card ${task.id === selected.id ? "is-selected" : ""}" data-action="ai-choose-task" data-id="${task.id}" aria-pressed="${task.id === selected.id}">${compatible.has(task.id) ? '<span class="compatible-mark">Engine fit</span>' : ""}<span class="review-dot risk-${task.risk}"></span><h4>${esc(task.name)}</h4><p>${esc(task.summary)}</p><dl><div><dt>Changes</dt><dd>${esc(task.changes)}</dd></div><div><dt>Leaves</dt><dd>${esc(task.preserves)}</dd></div></dl></button>`).join("")}</div></section>
+      <section class="ai-request-controls"><div class="section-heading"><div><h4>Bound the request</h4><p>${esc(selected.summary)} It deliberately leaves ${esc(selected.leavesUntouched.toLowerCase())}</p></div><span class="review-level risk-${esc(options.reviewLevel)}">${esc(DATA.ai.reviewLevels[options.reviewLevel]?.name || "Careful")} review</span></div><div class="ai-control-grid">
+        <label><span>Prompt depth</span><select data-ai-option="depth">${DATA.ai.promptDepths.map(depth => `<option value="${depth.id}" ${options.depth === depth.id ? "selected" : ""}>${esc(depth.name)} — ${esc(depth.description)}</option>`).join("")}</select></label>
+        <label><span>Review level</span><select data-ai-option="reviewLevel">${Object.values(DATA.ai.reviewLevels).map(level => `<option value="${level.id}" ${options.reviewLevel === level.id ? "selected" : ""}>${esc(level.name)} — ${esc(level.description)}</option>`).join("")}</select></label>
+        <label><span>Number of items</span><input class="input" type="number" min="1" max="20" value="${Number(options.quantity) || selected.quantity}" data-ai-option="quantity"></label>
+        <label><span>Maximum main-content words</span><input class="input" type="number" min="60" max="1500" step="10" value="${Number(options.maxWords) || 180}" data-ai-option="maxWords"></label>
+        <label><span>Return format</span><select data-ai-option="returnFormat"><option value="structured-text" ${options.returnFormat === "structured-text" ? "selected" : ""}>Plain structured text</option><option value="json" ${options.returnFormat === "json" ? "selected" : ""}>Constrained JSON</option></select></label>
+        <label><span>Content slot AI may change</span><select data-ai-option="changeSlot">${(engine.ai?.allowedSlots || ["example", "prompts", "vocabulary", "teacherNotes"]).map(slot => `<option value="${slot}" ${options.changeSlot === slot ? "selected" : ""}>${esc(titleCase(slot))}</option>`).join("")}</select></label>
+        <label><span>Apply accepted content to</span><select data-ai-option="stageScope"><option value="all" ${options.stageScope === "all" ? "selected" : ""}>Shared pathway content</option><option value="current" ${options.stageScope === "current" ? "selected" : ""}>${esc(stageById(scaffold.stage).name)} only</option></select></label>
+        ${scaffold.subject === "english" ? `<label><span>School phonics programme, if relevant</span><input class="input" data-ai-option="phonicsProgramme" value="${esc(options.phonicsProgramme)}" placeholder="Leave blank when not a phonics task"></label>` : ""}
+        ${scaffold.subject === "languages" ? `<label><span>Target language and variant</span><input class="input" data-ai-option="targetLanguage" value="${esc(options.targetLanguage)}" placeholder="e.g. French · France"></label>` : ""}
+        <label class="span-2"><span>Precise context note, if needed</span><textarea data-ai-option="contextNote" rows="2" placeholder="Names, values, text type, scenario boundary or content to retain…">${esc(options.contextNote)}</textarea></label>
+      </div></section>
+      ${renderAISpecialistControls(selected, options)}
+      <section class="knowledge-inclusion"><div><span class="eyebrow">Knowledge Studio connection</span><h4>Local knowledge included in the prompt</h4><p>Only relevant selected items are included—not the full curriculum database.</p></div><div>${knowledge.map(([id, label]) => `<label><input type="checkbox" data-ai-knowledge="${id}" ${(options.selectedKnowledge || []).includes(id) ? "checked" : ""}><span>${esc(label)}</span></label>`).join("")}</div></section>
+      <details class="image-preparation"><summary>Prepare an optional local image</summary><div class="image-prep-body"><div><h4>Teacher-added image preparation</h4><p>The image stays in this browser. It is never uploaded by Scaffold Seeds.</p><label class="button" for="ai-image-file">Choose local image</label><input class="file-input" id="ai-image-file" type="file" accept="image/png,image/jpeg,image/webp" data-ai-image-file></div>${workspace.image ? `<div class="image-prep-preview"><img src="${esc(workspace.image.dataUrl)}" alt="${esc(workspace.image.alt || "Local preview")}" style="transform:rotate(${Number(workspace.image.rotation) || 0}deg);object-fit:${esc(workspace.image.fit || "contain")};filter:${workspace.image.greyscale ? "grayscale(1)" : "none"}"><span>${Math.round((workspace.image.bytes || 0) / 1024)} KB · ${workspace.image.width || "?"} × ${workspace.image.height || "?"}</span></div><div class="image-prep-controls"><label>Caption<input class="input" data-ai-image-field="caption" value="${esc(workspace.image.caption || "")}"></label><label>Alt text<input class="input" data-ai-image-field="alt" value="${esc(workspace.image.alt || "")}"></label><label>Fit<select data-ai-image-field="fit"><option value="contain" ${workspace.image.fit === "contain" ? "selected" : ""}>Contain</option><option value="cover" ${workspace.image.fit === "cover" ? "selected" : ""}>Crop to fit</option></select></label><div class="image-button-row"><button class="button button-compact" data-action="ai-rotate-image">Rotate</button><button class="button button-compact" data-action="ai-toggle-greyscale">Greyscale preview</button><button class="button button-compact" data-action="ai-remove-image">Remove</button></div>${workspace.image.bytes > 850000 ? '<p class="image-warning">Large image: local browser storage may become unreliable. Reduce the file before saving many versions.</p>' : ""}</div>` : '<div class="image-empty">PNG, JPEG or WebP · use no identifiable pupil images</div>'}</div></details>
+      ${workspace.image ? renderImageChecks(workspace.image) : ""}
+      <div class="ai-phase-footer"><span>${icon("shield")} The scaffold already works without AI.</span><button class="button button-primary" data-action="ai-prepare-prompt">Prepare AI prompt ${icon("arrow")}</button></div>`;
+  }
+
+  function promptTextForView(workspace) {
+    const prompt = workspace.prompt;
+    if (!prompt) return "";
+    const view = workspace.promptView || "primary";
+    if (workspace.promptManual && view === "primary") return workspace.promptManual;
+    return { primary: prompt.scrubbed, compact: prompt.compact, structured: prompt.structured, packet: prompt.packet, image: prompt.imageBrief, verify: prompt.verificationOnly }[view] || prompt.scrubbed;
+  }
+
+  function renderAIPromptPhase(scaffold, workspace) {
+    if (!workspace.prompt) return `<div class="empty-help"><h4>No prompt prepared yet</h4><p>Choose one bounded task first.</p><button class="button" data-action="ai-phase" data-id="task">Choose a task</button></div>`;
+    const prompt = workspace.prompt;
+    const view = workspace.promptView || "primary";
+    const privacy = view === "primary" && !workspace.promptManual ? prompt.privacy : AI.privacyScan(promptTextForView(workspace));
+    const views = [["primary", "Professional"], ["compact", "Compact"], ["structured", "Structured"], ["packet", "Prompt packet"], ...(prompt.taskId === "image-brief" || prompt.taskId === "visual-description" ? [["image", "Image brief"]] : []), ["verify", "Verification only"]];
+    return `<div class="ai-phase-head"><span class="phase-number">02</span><div><span class="eyebrow">Request narrowly</span><h3>Inspect the prompt before it leaves</h3><p>${esc(prompt.taskName)} · ${esc(titleCase(prompt.depth))} depth · ${esc(titleCase(prompt.reviewLevel))} review. A longer prompt is not presented as a guarantee.</p></div></div>
+      <section class="prompt-editorial"><div class="prompt-view-tabs">${views.map(([id, label]) => `<button class="${view === id ? "is-active" : ""}" data-action="ai-prompt-view" data-id="${id}">${esc(label)}</button>`).join("")}</div><textarea class="prompt-output ai-prompt-output" data-ai-prompt-manual rows="28" ${view !== "primary" ? "readonly" : ""}>${esc(promptTextForView(workspace))}</textarea><div class="prompt-editorial-footer"><span>${prompt.sectionsIncluded.length} purposeful sections · provider neutral</span><div><button class="button button-compact" data-action="ai-download-prompt" data-id="${view}">${icon("download")} Download</button><button class="button button-primary" data-action="ai-copy-prompt" data-id="${view}">${icon("copy")} Copy ${esc(views.find(([id]) => id === view)?.[1] || "prompt")}</button></div></div></section>
+      <section class="privacy-scrubber ${privacy.clean ? "is-clear" : "needs-review"}"><span>${icon("shield")}</span><div><h4>${privacy.clean ? "Privacy check ready for your review" : `${privacy.findings.length} possible privacy item${privacy.findings.length === 1 ? "" : "s"}`}</h4><p>${esc(privacy.warning)}</p>${privacy.findings.length ? `<div class="privacy-findings">${privacy.findings.map(item => `<span><strong>${esc(item.label)}</strong> ${esc(item.value)} → ${esc(item.replacement)}</span>`).join("")}</div>` : ""}</div><button class="button button-compact" data-action="ai-rescrub-prompt">Apply neutral replacements</button></section>
+      <section class="expected-return"><div><span class="eyebrow">Expected return</span><h4>Human-readable, inert content</h4><p>External AI is asked for structured text—not a document, HTML or executable code.</p></div><pre>${esc(prompt.expected)}</pre></section>
+      <div class="safe-leave-note">${icon("check")}<span><strong>Scaffold saved. You can safely leave and return.</strong><small>Copying opens no external service and sends nothing automatically.</small></span></div>
+      <div class="ai-phase-footer"><button class="button" data-action="ai-phase" data-id="task">← Refine request</button><button class="button button-primary" data-action="ai-phase" data-id="import">I have a response to import ${icon("arrow")}</button></div>`;
+  }
+
+  function renderAIImportPhase(scaffold, workspace) {
+    const parsed = workspace.parsed;
+    return `<div class="ai-phase-head"><span class="phase-number">03</span><div><span class="eyebrow">Return safely</span><h3>Paste the complete response</h3><p>The raw response is preserved. Scripts, styles and markup are never executed.</p></div></div>
+      <section class="import-desk"><div class="import-desk-head"><div><h4>External AI response</h4><p>Plain text, markdown, tables, lists and simple JSON are supported.</p></div>${workspace.rawPreservedAt ? `<span class="raw-preserved">Raw response preserved ${relativeDate(workspace.rawPreservedAt)}</span>` : ""}</div><textarea id="ai-raw-import" data-ai-raw-import rows="18" placeholder="Paste the full response here. Introductory commentary and imperfect headings are safe to include…">${esc(workspace.rawImport || "")}</textarea><div class="import-actions"><button class="button button-primary" data-action="ai-structure-import">Try automatic structuring</button><button class="button" data-action="ai-import-plain">Use as plain text</button><button class="button" data-action="ai-manual-import">Split manually</button><button class="button button-ghost" data-action="ai-clear-import">Start over</button></div></section>
+      ${parsed ? `<section class="import-result"><div class="section-heading"><div><span class="eyebrow">Import recovery</span><h4>${esc(parsed.format)} organised into ${parsed.sections.length} section${parsed.sections.length === 1 ? "" : "s"}</h4><p>${parsed.missing.length ? `${parsed.missing.length} expected section${parsed.missing.length === 1 ? " is" : "s are"} still missing.` : "All expected content types were detected."}</p></div><span class="local-check-label">Raw response retained</span></div><div class="import-summary-grid">${parsed.sections.map(section => `<div class="import-summary-card ${section.unexpected ? "is-unexpected" : ""}"><span>${section.expected ? "Expected" : section.unexpected ? "Unexpected" : "Optional"}</span><strong>${esc(section.label)}</strong><small>${section.items.length} item${section.items.length === 1 ? "" : "s"}</small></div>`).join("")}</div>${parsed.warnings.length ? `<div class="import-warnings">${parsed.warnings.map(warning => `<p><strong>${esc(warning.title)}</strong> ${esc(warning.message)}</p>`).join("")}</div>` : ""}</section>` : ""}
+      <div class="ai-phase-footer"><button class="button" data-action="ai-phase" data-id="prompt">← Return to prompt</button><button class="button button-primary" data-action="ai-phase" data-id="review" ${parsed ? "" : "disabled"}>Review sections ${icon("arrow")}</button></div>`;
+  }
+
+  function diffSegmentsHTML(segments) {
+    return segments.map(segment => segment.type === "same" ? esc(segment.text) : segment.type === "added" ? `<mark class="diff-added">${esc(segment.text)}</mark>` : `<del class="diff-removed">${esc(segment.text)}</del>`).join("");
+  }
+
+  function renderAIReviewPhase(scaffold, workspace) {
+    const parsed = workspace.parsed;
+    if (!parsed) return `<div class="empty-help"><h4>No imported response yet</h4><p>Paste and structure a response before reviewing changes.</p><button class="button" data-action="ai-phase" data-id="import">Import a response</button></div>`;
+    const total = parsed.sections.reduce((sum, section) => sum + section.items.length, 0);
+    const decided = parsed.sections.reduce((sum, section) => sum + section.items.filter(item => item.status !== "pending").length, 0);
+    const compareId = workspace.comparisonSection || parsed.sections.find(section => section.id !== "other")?.id || "";
+    const comparison = compareId ? AI.compareSection(scaffold, parsed, compareId) : null;
+    const lastTrim = parsed.trimHistory?.[0];
+    return `<div class="ai-phase-head"><span class="phase-number">04</span><div><span class="eyebrow">Review changes</span><h3>Accept small pieces—not a replacement document</h3><p>${decided} of ${total} items decided. Keep original content wherever the external contribution is weaker.</p></div></div>
+      <section class="review-tools"><div class="decision-progress"><span style="--progress:${total ? Math.round(decided / total * 100) : 0}%"></span><strong>${decided}/${total}</strong><small>items reviewed</small></div><div><button class="button button-compact" data-action="ai-trim" data-id="keep-six">Keep best six</button><button class="button button-compact" data-action="ai-trim" data-id="remove-repeats">Remove repeats</button><button class="button button-compact" data-action="ai-trim" data-id="reduce-vocabulary">Reduce vocabulary</button><button class="button button-compact" data-action="ai-trim" data-id="shorten-instructions">Shorten instructions</button><button class="button button-compact" data-action="ai-trim" data-id="move-teacher-notes">Move notes off pupil page</button><button class="button button-compact" data-action="ai-trim" data-id="bullet-explanations">Explanations to bullets</button><button class="button button-compact" data-action="ai-trim" data-id="stems-to-questions">Stems to questions</button><button class="button button-compact" data-action="ai-trim" data-id="split-pages">Split into two pages</button><button class="button button-compact" data-action="ai-trim" data-id="compact-cards">Compact card version</button></div></section>
+      ${lastTrim ? `<details class="trim-record"><summary>Show the latest trimming record · ${lastTrim.removed.length} changed or removed</summary>${lastTrim.removed.length ? `<ul>${lastTrim.removed.slice(0, 12).map(item => `<li><span>${esc(DATA.ai.sections[item.sectionId]?.name || item.sectionId)}</span><del>${esc(item.text)}</del>${item.replacement ? `<ins>${esc(item.replacement)}</ins>` : ""}</li>`).join("")}</ul>` : "<p>No content matched that trimming action. Nothing was discarded.</p>"}</details>` : ""}
+      <div class="imported-sections">${parsed.sections.map((section, sectionIndex) => `<section class="imported-section ${section.unexpected ? "is-unexpected" : ""}"><div class="imported-section-head"><div><span>${section.expected ? "Expected section" : section.unexpected ? "Unexpected content" : "Optional section"}</span><h4>${esc(section.label)}</h4></div><label>Map as<select data-ai-section-map data-index="${sectionIndex}"><option value="ignore" ${section.mapping === "ignore" ? "selected" : ""}>Ignore</option>${Object.entries(DATA.ai.sections).map(([id, schema]) => `<option value="${id}" ${section.id === id && section.mapping !== "ignore" ? "selected" : ""}>${esc(schema.name)}</option>`).join("")}</select></label><div><button class="text-link" data-action="ai-decide-section" data-id="${section.id}" data-status="accepted">Accept section</button><button class="text-link" data-action="ai-decide-section" data-id="${section.id}" data-status="rejected">Reject section</button><button class="text-link" data-action="ai-compare-section" data-id="${section.id}">Compare</button></div></div><div class="imported-items">${section.items.map((item, itemIndex) => `<article class="imported-item status-${item.status}" data-item-id="${item.id}"><div class="item-number">${String(itemIndex + 1).padStart(2, "0")}</div><textarea data-ai-item-edit="${item.id}" rows="${Math.max(2, Math.min(8, Math.ceil((item.editedText ?? item.text).length / 95)))}">${esc(item.editedText ?? item.text)}</textarea><div class="item-decisions"><button class="${item.status === "accepted" ? "is-active" : ""}" data-action="ai-item-decision" data-id="${item.id}" data-status="accepted">Accept</button><button class="${item.status === "edited" ? "is-active" : ""}" data-action="ai-item-decision" data-id="${item.id}" data-status="edited">Edit</button><button class="${item.status === "rejected" ? "is-active" : ""}" data-action="ai-item-decision" data-id="${item.id}" data-status="rejected">Reject</button><button class="${item.status === "original" ? "is-active" : ""}" data-action="ai-item-decision" data-id="${item.id}" data-status="original">Keep original</button></div></article>`).join("")}</div><button class="regenerate-section-link" data-action="ai-regenerate-section" data-id="${section.id}">Prepare a new prompt for only this section →</button></section>`).join("")}</div>
+      ${comparison ? `<section class="plain-comparison"><div class="section-heading"><div><span class="eyebrow">What actually changed?</span><h4>${esc(DATA.ai.sections[comparison.sectionId]?.name || comparison.sectionId)}</h4><p>${comparison.beforeWords} original words → ${comparison.afterWords} proposed words ${comparison.readingChange > 0 ? `(+${comparison.readingChange})` : `(${comparison.readingChange})`}</p></div><select data-ai-compare-select>${parsed.sections.map(section => `<option value="${section.id}" ${section.id === compareId ? "selected" : ""}>${esc(section.label)}</option>`).join("")}</select></div><div class="comparison-columns"><div><span>Original local content</span><p>${esc(comparison.before || "No content in this local slot.")}</p></div><div><span>Proposed external content</span><p>${esc(comparison.after || "No proposed content.")}</p></div></div><details><summary>Show highlighted change</summary><div class="word-diff">${diffSegmentsHTML(comparison.diff)}</div></details></section>` : ""}
+      <div class="ai-phase-footer"><button class="button" data-action="ai-phase" data-id="import">← Restore or re-import</button><button class="button button-primary" data-action="ai-run-verification" ${decided ? "" : "disabled"}>Verify selected content ${icon("arrow")}</button></div>`;
+  }
+
+  function renderFindingCard(item) {
+    const control = item.severity === "do-not-use" && !item.resolved
+      ? `<button class="button button-compact" data-action="ai-correct-finding" data-id="${item.id}">Correct in review</button>`
+      : `<button class="button button-compact" data-action="ai-toggle-finding" data-id="${item.id}">${item.resolved ? "Reopen" : "Mark reviewed"}</button>`;
+    return `<article class="verification-finding severity-${esc(item.severity)} ${item.resolved ? "is-resolved" : ""}"><div class="finding-symbol">${item.resolved ? "✓" : item.severity === "do-not-use" ? "!" : item.severity === "important" ? "!" : item.severity === "review" ? "?" : "i"}</div><div><div class="finding-meta"><span>${esc(item.severityLabel)}</span><span>${esc(item.dimension)}</span><span>${esc(item.validationLabel)}</span></div><h4>${esc(item.title)}</h4><p>${esc(item.message)}</p><small><strong>Next action:</strong> ${esc(item.action)}</small></div>${control}</article>`;
+  }
+
+  function recomputeVerificationSummary(result) {
+    if (!result) return;
+    result.blocking = result.findings.filter(item => item.severity === "do-not-use" && !item.resolved).length;
+    result.important = result.findings.filter(item => item.severity === "important" && !item.resolved).length;
+    result.review = result.findings.filter(item => item.severity === "review" && !item.resolved).length;
+    result.canApprove = result.blocking === 0;
+    result.status = result.blocking ? "Do not use yet" : result.important ? "Warnings unresolved" : "Ready for review";
+  }
+
+  function renderComputingTrace(workspace) {
+    const trace = VERIFY.traceSimpleAlgorithm(workspace.options.traceAlgorithm || "");
+    return `<section class="manual-trace"><div class="section-heading"><div><span class="eyebrow">Optional local tool</span><h4>Manual trace mode</h4><p>Step through simple SET, ADD, SUBTRACT, MULTIPLY and DIVIDE instructions. This checks the trace—not whether the algorithm solves the intended problem.</p></div><button class="button button-compact" data-action="ai-run-trace">Run trace</button></div><textarea data-ai-option="traceAlgorithm" rows="5" aria-label="Simple algorithm to trace">${esc(workspace.options.traceAlgorithm || "")}</textarea>${trace.length ? `<div class="trace-table"><div><strong>Step</strong><strong>Instruction</strong><strong>State after step</strong></div>${trace.map(row => `<div><span>${row.step}</span><span>${esc(row.instruction)}</span><span>${esc(Object.entries(row.state).map(([key, value]) => `${key} = ${value}`).join(" · ") || "No tracked value")}</span></div>`).join("")}</div>` : '<p class="trace-empty">Enter one instruction per line to see the local trace.</p>'}</section>`;
+  }
+
+  function acceptedImportForVerification(parsed, sourceRecords = []) {
+    const result = {
+      ...parsed,
+      raw: "",
+      sections: (parsed?.sections || []).map(section => ({
+        ...section,
+        items: (section.items || []).filter(item => ["accepted", "edited"].includes(item.status))
+      })).filter(section => section.items.length)
+    };
+    const sourceItems = sourceRecords.filter(record => record.title || record.author || record.url).map(record => ({ id: record.id, text: [record.title, record.author, record.date, record.publisher, record.url].filter(Boolean).join(" · "), status: "accepted" }));
+    if (sourceItems.length) {
+      const existing = result.sections.find(section => section.id === "sources");
+      if (existing) existing.items.push(...sourceItems);
+      else result.sections.push({ id: "sources", label: "Sources", mapping: "sources", expected: false, unexpected: false, items: sourceItems });
+    }
+    return result;
+  }
+
+  function renderAIVerifyPhase(scaffold, workspace) {
+    if (!workspace.parsed) return `<div class="empty-help"><h4>No content to verify</h4><button class="button" data-action="ai-phase" data-id="import">Import a response</button></div>`;
+    if (!workspace.verification) {
+      workspace.verification = VERIFY.verify(scaffold, acceptedImportForVerification(workspace.parsed, workspace.sourceRecords), { ...workspace.options, taskId: workspace.options.taskId, reviewLevel: workspace.options.reviewLevel });
+      saveAIWorkspace();
+    }
+    const result = workspace.verification;
+    recomputeVerificationSummary(result);
+    const acceptedCount = Object.values(AI.acceptedContent(workspace.parsed)).flat().length;
+    const canApply = workspace.approvalChecked && result.canApprove && acceptedCount > 0;
+    const preview = acceptedCount ? AI.applyAccepted(scaffold, workspace.parsed, { verification: result, prompt: workspace.prompt, approved: false, includeRaw: false }).resource : scaffold;
+    const dimensions = [...new Set(result.findings.map(item => item.dimension))];
+    return `<div class="ai-phase-head"><span class="phase-number">05</span><div><span class="eyebrow">Verify and rebuild</span><h3>Local checks, honest limits, human judgement</h3><p>${esc(result.methodNote)}</p></div></div>
+      <section class="verification-summary status-${result.blocking ? "block" : result.important ? "warn" : "ready"}"><div><span>${result.blocking ? "!" : result.important ? "!" : "✓"}</span><div><strong>${esc(result.status)}</strong><small>${esc(titleCase(result.reviewLevel))} review · ${acceptedCount} accepted item${acceptedCount === 1 ? "" : "s"}</small></div></div><dl><div><dt>Do not use yet</dt><dd>${result.blocking}</dd></div><div><dt>Important</dt><dd>${result.important}</dd></div><div><dt>Review</dt><dd>${result.review}</dd></div><div><dt>Locally checked</dt><dd>${result.findings.filter(item => item.validation === "local" || item.validation === "calculation" || item.validation === "structure").length}</dd></div></dl></section>
+      <div class="verification-dimensions">${dimensions.map(dimension => `<button data-action="ai-filter-findings" data-id="${esc(dimension)}">${esc(dimension)} <span>${result.findings.filter(item => item.dimension === dimension && !item.resolved).length}</span></button>`).join("")}</div>
+      <section class="verification-findings">${result.findings.filter(item => !workspace.findingFilter || item.dimension === workspace.findingFilter).map(renderFindingCard).join("")}</section>
+      <section class="verification-metrics"><div><span class="eyebrow">Reading indicators—not a reading-age score</span><h4>${result.metrics.words} words · ${result.metrics.averageSentenceWords} words per sentence on average</h4><p>Longest sentence ${result.metrics.longestSentenceWords} words · longest paragraph ${result.metrics.longestParagraphWords} words${result.metrics.properNouns?.length ? ` · possible proper nouns: ${esc(result.metrics.properNouns.slice(0, 6).join(", "))}` : ""}${result.metrics.repeated?.length ? ` · repeated terms: ${esc(result.metrics.repeated.slice(0, 5).map(item => `${item.word} (${item.count})`).join(", "))}` : ""}. Use these alongside knowledge demand, cohesion and teacher review.</p></div><div><button class="button button-compact" data-action="ai-rerun-verification">Re-run checks</button><button class="button button-compact" data-action="ai-download-report">Download report</button></div></section>
+      ${scaffold.subject === "computing" ? renderComputingTrace(workspace) : ""}
+      <section class="source-awareness"><div class="section-heading"><div><span class="eyebrow">Private teacher record</span><h4>Source awareness</h4><p>Keep provenance in Library guidance; pupil pages remain uncluttered.</p></div><button class="button button-compact" data-action="ai-add-source">Add source record</button></div>${workspace.sourceRecords?.length ? `<div class="source-records">${workspace.sourceRecords.map((record, index) => `<article><div class="source-record-head"><strong>Source ${index + 1}</strong><button class="text-link" data-action="ai-remove-source" data-id="${record.id}">Remove</button></div><div class="source-record-grid"><label>Type<select data-ai-source-field="type" data-source-id="${record.id}">${DATA.ai.sourceTypes.map(type => `<option ${record.type === type ? "selected" : ""}>${esc(type)}</option>`).join("")}</select></label><label>Title<input class="input" data-ai-source-field="title" data-source-id="${record.id}" value="${esc(record.title || "")}"></label><label>Author<input class="input" data-ai-source-field="author" data-source-id="${record.id}" value="${esc(record.author || "")}"></label><label>Date<input class="input" data-ai-source-field="date" data-source-id="${record.id}" value="${esc(record.date || "")}"></label><label>Publisher<input class="input" data-ai-source-field="publisher" data-source-id="${record.id}" value="${esc(record.publisher || "")}"></label><label>URL reference<input class="input" data-ai-source-field="url" data-source-id="${record.id}" value="${esc(record.url || "")}"></label><label>Retrieval date<input class="input" type="date" data-ai-source-field="retrievalDate" data-source-id="${record.id}" value="${esc(record.retrievalDate || "")}"></label><label>Classroom note<input class="input" data-ai-source-field="note" data-source-id="${record.id}" value="${esc(record.note || "")}"></label></div></article>`).join("")}</div>` : '<div class="source-empty">No source record attached. Add one whenever the content depends on a publication, quotation, statistic or lived testimony.</div>'}</section>
+      <section class="rebuild-preview"><div class="section-heading"><div><span class="eyebrow">Scaffold Seeds rebuild</span><h4>Accepted content inside the controlled local page</h4><p>External AI does not control type, margins, hierarchy, diagrams or growth labels.</p></div><span>${esc(stageById(scaffold.stage).name)}</span></div><div class="paper-wrap">${renderResourceDocument(preview)}</div></section>
+      <section class="human-approval ${result.blocking ? "is-blocked" : ""}"><label><input type="checkbox" data-ai-approval ${workspace.approvalChecked ? "checked" : ""} ${result.blocking ? "disabled" : ""}><span><strong>${esc(DATA.ai.approvalText)}</strong><small>${result.blocking ? "Review and resolve every ‘Do not use yet’ finding first." : "This approval is private and stored with the resource provenance record."}</small></span></label><div><label>Round name<input class="input" data-ai-round-name value="${esc(workspace.roundName || "")}" placeholder="e.g. Final vocabulary revision"></label><label>Approval scope<select data-ai-approval-scope><option value="resource" ${workspace.approvalScope === "resource" ? "selected" : ""}>Whole resource</option><option value="sections" ${workspace.approvalScope === "sections" ? "selected" : ""}>Accepted sections only</option><option value="page" ${workspace.approvalScope === "page" ? "selected" : ""}>Current page</option></select></label></div></section>
+      ${workspace.appliedAt ? `<div class="applied-confirmation">${icon("check")}<div><strong>Approved content rebuilt locally</strong><p>A version checkpoint, decision record, findings and provenance were saved. Print Studio will use this Scaffold Seeds page—not the external response.</p></div><button class="button" data-action="open-print">Open Print Studio</button></div>` : ""}
+      <div class="ai-phase-footer"><button class="button" data-action="ai-phase" data-id="review">← Review decisions</button><button class="button button-primary" data-action="ai-apply-content" ${canApply ? "" : "disabled"}>Rebuild approved resource ${icon("arrow")}</button></div>`;
+  }
+
+  function ensureAIBaselineSaved(scaffold) {
+    let item = scaffold;
+    let index = state.library.findIndex(resource => resource.id === scaffold.id);
+    if (index < 0) {
+      item = { ...scaffold, ai: scaffold.ai || null, updatedAt: new Date().toISOString() };
+      state.library.unshift(item);
+      index = 0;
+    } else state.library[index] = item;
+    state.activeScaffold = item;
+    state.draft.editingId = item.id;
+    writeStore(STORAGE.library, state.library);
+    saveDraft();
+    return item;
+  }
+
+  function prepareAIPrompt() {
+    const scaffold = ensureAIBaselineSaved(activeForAI());
+    state.aiWorkspace.resourceId = scaffold.id;
+    state.aiWorkspace.prompt = AI.buildPrompt(scaffold, state.aiWorkspace.options);
+    state.aiWorkspace.promptView = "primary";
+    state.aiWorkspace.promptManual = "";
+    state.aiWorkspace.phase = "prompt";
+    state.settings.aiPromptDepth = state.aiWorkspace.options.depth;
+    state.preferences.aiTask = state.aiWorkspace.options.taskId;
+    writeStore(STORAGE.settings, state.settings);
+    writeStore(STORAGE.preferences, state.preferences);
+    updateAIResourceStatus("prompt-prepared", { pendingPrompt: { id: state.aiWorkspace.prompt.id, taskId: state.aiWorkspace.prompt.taskId, createdAt: state.aiWorkspace.prompt.createdAt } });
+    saveAIWorkspace();
+    render();
+  }
+
+  function structureAIImport(mode = "automatic") {
+    const raw = state.aiWorkspace.rawImport;
+    if (!raw.trim()) { toast("Paste the external response first."); return; }
+    state.aiWorkspace.rawPreservedAt = new Date().toISOString();
+    state.aiWorkspace.parsed = AI.parseImport(raw, state.aiWorkspace.options.taskId, mode);
+    state.aiWorkspace.sourceRecords = state.aiWorkspace.parsed.sections.filter(section => section.id === "sources").flatMap(section => section.items).map(item => AI.makeSourceRecord(item.text));
+    state.aiWorkspace.verification = null;
+    updateAIResourceStatus("response-imported");
+    saveAIWorkspace();
+    toast("Raw response preserved and organised into reviewable sections.");
+    render();
+  }
+
+  function runAIVerification() {
+    const workspace = state.aiWorkspace;
+    if (!workspace.parsed) return;
+    const undecided = workspace.parsed.sections.flatMap(section => section.items).filter(item => item.status === "pending");
+    if (undecided.length) {
+      undecided.forEach(item => { item.status = "rejected"; });
+      toast(`${undecided.length} undecided item${undecided.length === 1 ? " was" : "s were"} left out, not accepted silently.`);
+    }
+    workspace.verification = VERIFY.verify(activeForAI(), acceptedImportForVerification(workspace.parsed, workspace.sourceRecords), { ...workspace.options, taskId: workspace.options.taskId, reviewLevel: workspace.options.reviewLevel });
+    workspace.phase = "verify";
+    updateAIResourceStatus(workspace.verification.blocking || workspace.verification.important ? "warnings-unresolved" : "review-required", { lastVerification: workspace.verification });
+    saveAIWorkspace();
+    render();
+  }
+
+  function applyAIContent() {
+    const scaffold = activeForAI();
+    const workspace = state.aiWorkspace;
+    recomputeVerificationSummary(workspace.verification);
+    if (!workspace.approvalChecked || workspace.verification.blocking) { toast("Complete the human approval gate and resolve serious findings first."); return; }
+    const index = state.library.findIndex(item => item.id === scaffold.id);
+    const original = index >= 0 ? state.library[index] : scaffold;
+    const checkpoint = versionSnapshot(original, `Before ${workspace.roundName || AI.taskById(workspace.options.taskId).name}`);
+    const applied = AI.applyAccepted(original, workspace.parsed, { verification: workspace.verification, prompt: workspace.prompt, approved: true, approvalScope: workspace.approvalScope, roundName: workspace.roundName, includeRaw: true });
+    if (workspace.parsed.localSuggestion?.format) applied.resource.format = workspace.parsed.localSuggestion.format;
+    applied.resource.versions = [checkpoint, ...(original.versions || [])].slice(0, 20);
+    if (workspace.image) applied.resource.assets = [{ ...workspace.image, id: workspace.image.id || uid(), addedAt: new Date().toISOString() }, ...(original.assets || [])].slice(0, 8);
+    if (workspace.sourceRecords?.length) applied.resource.sources = workspace.sourceRecords.map(record => ({ ...record }));
+    if (index >= 0) state.library[index] = applied.resource;
+    else state.library.unshift(applied.resource);
+    state.activeScaffold = applied.resource;
+    state.draft = normaliseDraft({ ...applied.resource, selectedBarriers: applied.resource.barriers, vocabulary: (applied.resource.content?.vocabulary || applied.resource.vocabulary || []).join(", "), tags: (applied.resource.tags || []).join(", "), editingId: applied.resource.id });
+    state.draft.engineId = applied.resource.engineId;
+    workspace.appliedAt = new Date().toISOString();
+    workspace.resourceId = applied.resource.id;
+    writeStore(STORAGE.library, state.library);
+    saveDraft();
+    saveAIWorkspace();
+    toast("Approved content rebuilt inside Scaffold Seeds. The original was checkpointed.");
+    render();
+  }
+
+  function downloadText(filename, text, type = "text/plain") {
+    const url = URL.createObjectURL(new Blob([text], { type }));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  }
+
+  function analyseLocalImage(image) {
+    // Sample a small white-backed canvas so the check stays quick and never uploads the image.
+    const longest = Math.max(image.naturalWidth, image.naturalHeight, 1);
+    const scale = Math.min(1, 180 / longest);
+    const width = Math.max(1, Math.round(image.naturalWidth * scale));
+    const height = Math.max(1, Math.round(image.naturalHeight * scale));
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext("2d", { willReadFrequently: true });
+    if (!context) return null;
+    context.fillStyle = "#ffffff";
+    context.fillRect(0, 0, width, height);
+    context.drawImage(image, 0, 0, width, height);
+    const pixels = context.getImageData(0, 0, width, height).data;
+    let darkest = 255;
+    let lightest = 0;
+    let darkness = 0;
+    let count = 0;
+    for (let index = 0; index < pixels.length; index += 4) {
+      const alpha = pixels[index + 3] / 255;
+      const red = pixels[index] * alpha + 255 * (1 - alpha);
+      const green = pixels[index + 1] * alpha + 255 * (1 - alpha);
+      const blue = pixels[index + 2] * alpha + 255 * (1 - alpha);
+      const luminance = .2126 * red + .7152 * green + .0722 * blue;
+      darkest = Math.min(darkest, luminance);
+      lightest = Math.max(lightest, luminance);
+      darkness += 1 - luminance / 255;
+      count += 1;
+    }
+    return AI.assessImageSample({ darkest, lightest, darkness, count, widthPixels: image.naturalWidth, heightPixels: image.naturalHeight });
+  }
+
+  function copyText(text, confirmation = "Copied.") {
+    const fallback = () => {
+      const area = document.createElement("textarea");
+      area.value = text; area.setAttribute("readonly", ""); area.style.position = "fixed"; area.style.opacity = "0";
+      document.body.appendChild(area); area.select(); document.execCommand?.("copy"); area.remove(); toast(confirmation);
+    };
+    if (navigator.clipboard?.writeText) navigator.clipboard.writeText(text).then(() => toast(confirmation), fallback);
+    else fallback();
   }
 
   function activeForPrint() {
@@ -1277,8 +1759,13 @@
         <div class="settings-row settings-row-stack"><span><strong>School or class label</strong><small>Optional. Never enter pupil names.</small></span><div><input class="input" data-setting-field="schoolLabel" value="${esc(state.settings.schoolLabel)}" placeholder="School name"><input class="input" data-setting-field="classLabel" value="${esc(state.settings.classLabel)}" placeholder="Class label"></div></div>
         <div class="settings-row"><span><strong>Preferred terminology</strong><small>Used in teacher-facing guidance.</small></span><select data-setting-select="terminology"><option value="pupils" ${state.settings.terminology === "pupils" ? "selected" : ""}>Pupils</option><option value="children" ${state.settings.terminology === "children" ? "selected" : ""}>Children</option><option value="learners" ${state.settings.terminology === "learners" ? "selected" : ""}>Learners</option></select></div>
       </div></section>
+      <section class="settings-card"><h3>AI Companion defaults</h3><p>Remember practical choices transparently. These are local defaults—not educational truth learned by the app.</p><div class="settings-list">
+        <div class="settings-row"><span><strong>Preferred prompt depth</strong><small>Professional is the balanced default.</small></span><select data-setting-select="aiPromptDepth">${DATA.ai.promptDepths.map(depth => `<option value="${depth.id}" ${state.settings.aiPromptDepth === depth.id ? "selected" : ""}>${esc(depth.name)}</option>`).join("")}</select></div>
+        ${settingSwitch("Keep raw AI responses in backups", "Turn off for smaller exported files; local resource provenance remains.", "aiIncludeResponseHistory")}
+        <div class="settings-row"><span><strong>Remembered choices</strong><small>${esc(AI.taskById(state.preferences.aiTask || "accurate-examples").name)} · ${esc(state.settings.aiPromptDepth)}</small></span><button class="button button-compact" data-action="reset-ai-preferences">Reset</button></div>
+      </div></section>
       <section class="settings-card"><h3>Local data</h3><p>Back up or move your library without creating an account.</p><div class="settings-list"><div class="settings-row"><span><strong>Export a backup</strong><small>Download scaffolds, settings and reflections as JSON.</small></span><button class="button button-compact" data-action="export-data"><span data-icon="download"></span> Export</button></div><div class="settings-row"><span><strong>Import a backup</strong><small>Restore a Scaffold Seeds JSON backup.</small></span><label class="button button-compact" for="import-file"><span data-icon="upload"></span> Import</label><input class="file-input" type="file" id="import-file" accept="application/json" data-action="import-data"></div></div></section>
-      <section class="settings-card"><h3>Privacy and reset</h3><p>No login, server, tracking or external AI. Data is stored in this browser only.</p><div class="settings-list"><div class="settings-row"><span><strong>Clear local data</strong><small>Deletes saved scaffolds, reflections and the current draft.</small></span><button class="button button-compact button-danger" data-action="clear-data"><span data-icon="trash"></span> Clear</button></div></div></section>
+      <section class="settings-card"><h3>Privacy and reset</h3><p>Scaffold Seeds has no login or server. Copied prompts leave only when you paste them elsewhere; returned content stays in this browser.</p><div class="settings-list"><div class="settings-row"><span><strong>Pupil-information guardrail</strong><small>Never include names, diagnoses, assessment records, family details or safeguarding information in an external prompt.</small></span><span class="local-check-label">Local warning only</span></div><div class="settings-row"><span><strong>Clear local data</strong><small>Deletes saved scaffolds, AI rounds, raw responses, reflections and the current draft.</small></span><button class="button button-compact button-danger" data-action="clear-data"><span data-icon="trash"></span> Clear</button></div></div></section>
     </div>`;
   }
 
@@ -1386,158 +1873,6 @@
     render();
   }
 
-  function createAIPrompt(scaffold, taskId = state.aiTask, mode = state.aiMode) {
-    const subject = subjectById(scaffold.subject);
-    const engine = engineById(scaffold.engineId);
-    const stage = DATA.stages.find(item => item.id === scaffold.stage);
-    const barriers = scaffold.barriers.map(barrierById).filter(Boolean);
-    const intelligence = curriculumIntelligence(scaffold);
-    const task = DATA.aiTasks.find(item => item.id === taskId) || DATA.aiTasks[0];
-    const content = RESOURCE.normalise(scaffold).content;
-    const guardrails = {
-      mathematics: "Verify every calculation and equivalence. Ensure each representation matches the mathematical structure. Provide a separate answer audit.",
-      history: "Do not invent quotations or primary sources. Identify reconstructions clearly. Give provenance for any real source supplied.",
-      science: "Verify scientific accuracy. Distinguish observation, measurement and inference. Avoid simplified diagrams that create a misconception.",
-      english: "For reading or phonics, do not encourage picture guessing or conflict with the school's chosen phonics programme. Verify decodability if requested.",
-      "religious-education": "Represent diversity within traditions, do not fabricate testimony and avoid universal claims. Follow the locally applicable syllabus supplied by the teacher.",
-      pshe: "Use fictional third-person scenarios, safeguarding-sensitive language and no request for personal disclosure. Classroom learning is not therapeutic support.",
-      languages: "Verify grammar and natural usage. Do not use inaccurate English-style pronunciation approximations.",
-      geography: "Avoid stereotypes and simplistic rich/poor place comparisons. Locate evidence and name scale.",
-      computing: "Distinguish algorithm, program, code, data, information, hardware, software and network accurately. Do not reveal the debugging answer before investigation."
-    };
-    const core = `TASK
-${task.name} for the defined scaffold below. Return only the bounded enhancement requested.
-
-NON-NEGOTIABLE INSTRUCTION
-Do not redesign the scaffold structure unless explicitly asked. Populate and enhance the defined structure while preserving the pupil thinking identified below.
-
-CONTEXT
-- England primary: ${scaffold.year}
-- Subject: ${subject.name}
-- Topic: ${scaffold.topic}
-- Curriculum objective: ${scaffold.objective}
-- Intended pupil outcome: ${scaffold.expectedOutcome || "Demonstrate the objective through the protected subject decision."}
-- Lesson phase: ${scaffold.phase}
-- Prerequisite knowledge: ${(scaffold.prerequisites || intelligence.profile.prerequisites).join("; ")}
-
-BARRIER AND OWNERSHIP
-- Teacher observation: ${scaffold.situation}
-- Identified barriers: ${barriers.map(barrier => barrier.name).join(", ")}${scaffold.customBarrier ? `; ${scaffold.customBarrier}` : ""}
-- Essential thinking that must remain with the pupil: ${scaffold.essentialThinking || protectedThinkingStatement(scaffold)}
-- Pupil action: ${scaffold.pupilAction || "Use the support, then make and explain the central decision."}
-
-DEFINED LOCAL STRUCTURE
-- Engine: ${engine.name}
-- Engine purpose: ${engine.tagline}
-- Layout form: ${engine.distinctive}
-- Editable instruction: ${content.instruction}
-- Editable prompts: ${content.prompts.join(" | ")}
-- Example role: ${content.example}
-- Vocabulary: ${content.vocabulary.join(", ")}
-- Representation: ${content.diagramType || scaffold.representation || "None forced"}
-- Current support: ${stage.name} — ${stage.description}
-- Fading pathway: ${scaffold.removalPathway || RESOURCE.nextFade(scaffold)}
-- Print format: ${printFormatById(scaffold.format || state.print.format).name}; ${state.print.paper.toUpperCase()} ${state.print.orientation}; ${state.print.colour}
-- Access controls: ${content.instructionMode} instructions; ${content.density} density; ${content.responseSpace} response space; oral rehearsal ${content.oralRehearsal ? "included" : "not included"}
-
-SUBJECT ACCURACY GUARDRAIL
-${guardrails[scaffold.subject] || "Verify every factual claim and preserve the disciplinary character of the subject."}
-
-FORBIDDEN CHANGES
-- Do not lower or replace the curriculum objective.
-- Do not supply the conclusion, interpretation, operation, design decision or answer that belongs to the pupil.
-- Do not add generic decoration, fixed-ability labels, pupil-identifying information or diagnosis-specific branding.
-- Do not add arbitrary sections or turn the resource into a generic worksheet.
-- Do not rely on colour alone or include executable HTML.
-
-VALIDATION REQUIRED
-Check factual accuracy, answer leakage, repeated prompts, language load, representation validity, UK spelling and print overflow. State any uncertainty plainly.`;
-    if (mode === "compact") return core;
-    return `Create a professionally accurate enhancement for an English primary classroom scaffold.
-
-${core}
-
-PRODUCT PHILOSOPHY
-This must be a temporary support that removes barriers without reducing the intellectual challenge. It must not become a simplified worksheet, complete the thinking for pupils, lower the curriculum objective, or label pupils by need. The pupil must retain the important subject decisions, reasoning and explanation.
-
-CURRICULUM CONTEXT
-- Jurisdiction: England only
-- Phase and year group: ${scaffold.year}
-- Subject: ${subject.name}
-- Curriculum area: ${scaffold.topic}
-- Learning objective: ${scaffold.objective}
-- Lesson phase: ${scaffold.phase}
-
-TEACHER OBSERVATION
-${scaffold.situation}
-
-IDENTIFIED BARRIERS
-${barriers.map(barrier => `- ${barrier.name}: ${barrier.hint}`).join("\n")}
-
-TEACHER INTENTION
-${scaffold.intention}
-
-SCAFFOLD ARCHITECTURE TO PRESERVE
-- Engine: ${engine.name}
-- Engine purpose: ${engine.tagline}
-- Distinctive structure: ${engine.distinctive}
-- Fading stage: ${stage.name} — ${stage.support}
-- Stage definition: ${stage.description}
-
-SUBJECT KNOWLEDGE TO HANDLE CAREFULLY
-- Active subject lens: ${intelligence.profile.name}
-- Disciplinary thinking to preserve: ${scaffold.disciplinaryThinking || intelligence.profile.disciplinary}
-- Threshold concept: ${scaffold.threshold || intelligence.profile.threshold}
-- Prerequisite knowledge to check: ${(scaffold.prerequisites || intelligence.profile.prerequisites).join("; ")}
-- Intelligent small-step sequence: ${(scaffold.smallSteps || intelligence.profile.smallSteps).join(" → ")}
-- High-leverage vocabulary: ${(scaffold.vocabulary || []).join(", ") || "Select a small, precise set from the learning objective."}
-- Misconception to expose rather than conceal: ${scaffold.misconception || "Identify one plausible misconception from the curriculum context."}
-- Representation choice: ${scaffold.representation || "No fixed representation; choose only if it reveals the intended relationship."}
-- Subject principles: ${subject.principles.join("; ")}
-
-LAYOUT SPECIFICATION
-Populate the existing ${engine.name} structure rather than redesigning it. The output must be suitable for ${state.print.paper.toUpperCase()} ${state.print.orientation}, with safe margins, readable type, sufficient interaction space and photocopy-safe hierarchy. Avoid cartoons, clip-art, decorative gradients and visual noise.
-
-ACCESSIBILITY
-- Use plain, age-appropriate instructions without diluting subject language.
-- Keep reading load proportionate to the learning objective.
-- Separate directions, examples and pupil response spaces clearly.
-- Never rely on colour alone.
-- Allow a large-print version without losing structure.
-- Use UK spelling and authentic English-primary terminology.
-
-FADING PATHWAY
-Provide four linked versions of the same core scaffold:
-1. Seed — maximum support, explicit choices and sequenced prompts.
-2. Sprout — partial support with meaningful gaps for pupils to complete.
-3. Growth — minimal strategic cues only.
-4. Independent — remove the external structure and retain one self-check prompt.
-The current classroom version should be ${stage.name}, but all four should preserve the same learning objective and make the removal of support obvious.
-
-TEACHER GUIDANCE
-Add a separate concise teacher page explaining when to introduce the scaffold, what thinking must remain with pupils, what to listen for, the misconception to watch, and the exact observable signs that indicate movement to the next fading stage.
-
-QUALITY AUDIT BEFORE OUTPUT
-Silently review and revise the resource until every answer is yes:
-- Does it preserve the original curriculum challenge?
-- Does it target the identified barrier rather than make the whole task easier?
-- Is working-memory demand reduced only where it is incidental?
-- Does it avoid supplying the pupil’s conclusion, interpretation or key decision?
-- Is every word, box and prompt necessary?
-- Is the route towards independence explicit?
-- Would an experienced English primary teacher use it immediately?
-- Will it print cleanly in colour and greyscale?
-
-Return the requested ${task.name.toLowerCase()} enhancement first, followed by a short accuracy and answer-leakage audit. Do not include generic commentary, marketing language or placeholder text.`;
-  }
-
-  function showAIPrompt() {
-    state.aiPromptEdit = "";
-    state.createStep = 6;
-    state.view = "create";
-    render();
-  }
-
   function regenerateSection(sectionName) {
     const scaffold = RESOURCE.normalise({ ...scaffoldFromDraft(), content: state.draft.content });
     const profile = RESOURCE.profileFor(scaffold);
@@ -1559,26 +1894,6 @@ Return the requested ${task.name.toLowerCase()} enhancement first, followed by a
     state.activeScaffold = { ...(state.activeScaffold || scaffoldFromDraft()), content: { ...state.draft.content }, updatedAt: new Date().toISOString() };
     saveDraft();
     toast(sectionName === "prompts" ? "Prompts replaced with subject questions." : sectionName === "example" ? "A new local example frame was created." : "Instruction language shortened without lowering the objective.");
-    render();
-  }
-
-  function importControlledContent() {
-    const source = document.getElementById("controlled-import-text");
-    if (!source) return;
-    const clean = RESOURCE.sanitizeImport(source.value);
-    if (!clean) {
-      toast("Paste some plain text to import first.");
-      return;
-    }
-    const lines = clean.split(/\n+/).map(item => item.replace(/^[-•\d.)\s]+/, "").trim()).filter(Boolean);
-    if (state.importType === "vocabulary") state.draft.content.vocabulary = clean.split(/[,\n]/).map(item => item.trim()).filter(Boolean).slice(0, 12);
-    if (["examples", "passage"].includes(state.importType)) state.draft.content.example = clean.slice(0, 3000);
-    if (["questions", "scenarios"].includes(state.importType)) state.draft.content.prompts = lines.slice(0, 10);
-    if (state.importType === "teacher-notes") state.draft.content.teacherNotes = clean.slice(0, 3000);
-    state.activeScaffold = { ...(state.activeScaffold || scaffoldFromDraft()), content: { ...state.draft.content }, updatedAt: new Date().toISOString() };
-    state.createStep = 4;
-    saveDraft();
-    toast(`Imported ${state.importType.replaceAll("-", " ")} as sanitised editable text.`);
     render();
   }
 
@@ -1728,6 +2043,7 @@ Return the requested ${task.name.toLowerCase()} enhancement first, followed by a
     const item = state.library.find(scaffold => scaffold.id === id);
     if (!item?.archived || !window.confirm(`Permanently delete “${item.title}”? Export a backup first if you may need it later.`)) return;
     state.library = state.library.filter(scaffold => scaffold.id !== id);
+    localStorage.removeItem(`${STORAGE.aiWorkspace}.${id}`);
     if (state.activeScaffold?.id === id) state.activeScaffold = state.library[0] || null;
     writeStore(STORAGE.library, state.library);
     toast("Archived scaffold permanently deleted. It can be recovered only from an exported backup.");
@@ -1735,7 +2051,8 @@ Return the requested ${task.name.toLowerCase()} enhancement first, followed by a
   }
 
   function exportData() {
-    const payload = JSON.stringify({ product: "Scaffold Seeds", version: 3, exportedAt: new Date().toISOString(), library: state.library, settings: state.settings, reflections: state.reflections, preferences: state.preferences }, null, 2);
+    const library = state.settings.aiIncludeResponseHistory ? state.library : state.library.map(item => AI.portableResource(item, { excludeHistory: true }).resource);
+    const payload = JSON.stringify({ product: "Scaffold Seeds", version: 4, schemaVersion: 4, exportedAt: new Date().toISOString(), library, settings: state.settings, reflections: state.reflections, preferences: state.preferences, aiWorkspaces: storedAIWorkspaces(state.settings.aiIncludeResponseHistory) }, null, 2);
     const url = URL.createObjectURL(new Blob([payload], { type: "application/json" }));
     const link = document.createElement("a");
     link.href = url;
@@ -1752,7 +2069,7 @@ Return the requested ${task.name.toLowerCase()} enhancement first, followed by a
     try {
       const data = JSON.parse(await file.text());
       if (!Array.isArray(data.library) || typeof data.settings !== "object") throw new Error("invalid");
-      state.library = data.library.filter(item => item && typeof item === "object" && typeof item.title === "string" && typeof item.subject === "string").map(item => ({ ...item, versions: Array.isArray(item.versions) ? item.versions.slice(0, 16) : [] }));
+      state.library = migrateLibrary(data.library.filter(item => item && typeof item === "object" && typeof item.title === "string" && typeof item.subject === "string"));
       state.settings = { ...defaultSettings, ...data.settings };
       state.reflections = data.reflections || {};
       state.preferences = data.preferences || {};
@@ -1760,6 +2077,11 @@ Return the requested ${task.name.toLowerCase()} enhancement first, followed by a
       writeStore(STORAGE.settings, state.settings);
       writeStore(STORAGE.reflections, state.reflections);
       writeStore(STORAGE.preferences, state.preferences);
+      if (data.aiWorkspaces && typeof data.aiWorkspaces === "object") Object.entries(data.aiWorkspaces).forEach(([resourceId, workspace]) => {
+        if (workspace && typeof workspace === "object" && workspace.resourceId === resourceId) writeStore(`${STORAGE.aiWorkspace}.${resourceId}`, AI.createWorkspace(state.library.find(item => item.id === resourceId) || {}, workspace));
+      });
+      state.activeScaffold = state.library[0] || null;
+      state.aiWorkspace = AI.createWorkspace(state.activeScaffold || {}, state.activeScaffold?.id ? readStore(`${STORAGE.aiWorkspace}.${state.activeScaffold.id}`, null) : null);
       applySettings();
       toast(`Imported ${state.library.length} scaffold${state.library.length === 1 ? "" : "s"}.`);
       render();
@@ -1771,6 +2093,10 @@ Return the requested ${task.name.toLowerCase()} enhancement first, followed by a
   function clearData() {
     if (!window.confirm("Clear every saved scaffold, reflection and draft from this browser? This cannot be undone.")) return;
     Object.values(STORAGE).forEach(key => localStorage.removeItem(key));
+    for (let index = localStorage.length - 1; index >= 0; index -= 1) {
+      const key = localStorage.key(index);
+      if (key?.startsWith(`${STORAGE.aiWorkspace}.`)) localStorage.removeItem(key);
+    }
     state.library = [];
     state.reflections = {};
     state.preferences = {};
@@ -1778,6 +2104,7 @@ Return the requested ${task.name.toLowerCase()} enhancement first, followed by a
     state.draft = normaliseDraft(null);
     state.activeScaffold = null;
     state.settings = { ...defaultSettings };
+    state.aiWorkspace = AI.createWorkspace({});
     applySettings();
     toast("Local Scaffold Seeds data has been cleared.");
     render();
@@ -1802,6 +2129,7 @@ Return the requested ${task.name.toLowerCase()} enhancement first, followed by a
     const libraryItem = state.library.find(item => item.id === scaffold.id);
     if (libraryItem) {
       libraryItem.lastPrintedAt = new Date().toISOString();
+      if (libraryItem.ai?.status === "teacher-approved") libraryItem.ai.status = "print-ready";
       writeStore(STORAGE.library, state.library);
     }
     setTimeout(() => window.print(), 30);
@@ -1810,6 +2138,8 @@ Return the requested ${task.name.toLowerCase()} enhancement first, followed by a
   document.addEventListener("click", event => {
     const viewButton = event.target.closest("[data-view]");
     if (viewButton) {
+      if (viewButton.dataset.aiHomeFilter === "review") state.libraryFilters.aiStatus = "needs-review";
+      if (viewButton.dataset.aiHomeFilter === "approved") state.libraryFilters.aiStatus = "approved";
       navigate(viewButton.dataset.view);
       return;
     }
@@ -1946,20 +2276,189 @@ Return the requested ${task.name.toLowerCase()} enhancement first, followed by a
       state.print.stages = [state.activeScaffold.stage || state.settings.defaultStage];
       navigate("print");
     }
-    if (action === "ai-prompt") showAIPrompt();
-    if (action === "ai-mode") {
-      state.aiMode = id;
-      state.aiPromptEdit = "";
+    if (action === "open-ai") {
+      const selected = id ? state.library.find(item => item.id === id) : (state.activeScaffold || scaffoldFromDraft());
+      if (selected) {
+        if (state.aiWorkspace?.resourceId && state.aiWorkspace.resourceId !== selected.id) saveAIWorkspace();
+        state.activeScaffold = selected;
+        state.draft = normaliseDraft({ ...selected, selectedBarriers: selected.barriers, vocabulary: (selected.content?.vocabulary || selected.vocabulary || []).join(", "), tags: (selected.tags || []).join(", "), editingId: selected.id });
+        state.draft.engineId = selected.engineId;
+        ensureAIWorkspace(selected, state.aiWorkspace?.resourceId !== selected.id);
+        navigate("ai");
+      }
+    }
+    if (action === "ai-template-task") {
+      const scaffold = activeForAI();
+      if (scaffold) {
+        ensureAIWorkspace(scaffold, state.aiWorkspace?.resourceId !== scaffold.id);
+        const task = AI.taskById(id);
+        state.aiWorkspace.options.taskId = task.id;
+        state.aiWorkspace.options.reviewLevel = task.risk;
+        state.aiWorkspace.options.quantity = task.quantity;
+        state.aiWorkspace.options.depth = task.risk === "forensic" ? "forensic" : "professional";
+        state.aiTaskFamily = task.family;
+        state.aiWorkspace.phase = "task";
+        saveAIWorkspace();
+        navigate("ai");
+      }
+    }
+    if (action === "ai-family") { state.aiTaskFamily = id; render(); }
+    if (action === "ai-choose-task") {
+      const task = AI.taskById(id);
+      state.aiWorkspace.options.taskId = task.id;
+      state.aiWorkspace.options.quantity = task.quantity;
+      state.aiWorkspace.options.reviewLevel = task.risk;
+      state.aiWorkspace.options.depth = task.risk === "forensic" ? "forensic" : "professional";
+      state.aiWorkspace.options.sourceDetails = task.sourceSensitive;
+      state.aiWorkspace.prompt = null;
+      state.aiWorkspace.parsed = null;
+      state.aiWorkspace.verification = null;
+      saveAIWorkspace();
       render();
     }
-    if (action === "reset-ai-prompt") {
-      state.aiPromptEdit = "";
+    if (action === "ai-template") {
+      const template = DATA.ai.templates.find(item => item.id === id);
+      if (template) {
+        state.aiWorkspace.options = { ...state.aiWorkspace.options, taskId: template.taskId, depth: template.depth, reviewLevel: template.review, quantity: template.quantity };
+        state.aiTaskFamily = AI.taskById(template.taskId).family;
+        state.aiWorkspace.prompt = null;
+        saveAIWorkspace();
+        toast(`${template.name} configured.`);
+        render();
+      }
+    }
+    if (action === "ai-phase") {
+      if (id === "review" && !state.aiWorkspace.parsed) { toast("Import and structure a response first."); return; }
+      if (id === "verify" && !state.aiWorkspace.verification) { runAIVerification(); return; }
+      state.aiWorkspace.phase = id;
+      saveAIWorkspace();
       render();
     }
-    if (action === "import-controlled-content") importControlledContent();
+    if (action === "ai-prepare-prompt") prepareAIPrompt();
+    if (action === "ai-prompt-view") { state.aiWorkspace.promptView = id; saveAIWorkspace(); render(); }
+    if (action === "ai-copy-prompt") {
+      ensureAIBaselineSaved(activeForAI());
+      saveAIWorkspace();
+      const prompt = state.aiWorkspace.prompt;
+      const text = id === "primary" ? (state.aiWorkspace.promptManual || prompt.scrubbed) : ({ compact: prompt.compact, structured: prompt.structured, packet: prompt.packet, image: prompt.imageBrief, verify: prompt.verificationOnly }[id] || prompt.scrubbed);
+      copyText(AI.privacyScan(text).scrubbed, "Scaffold saved. Prompt copied; you can safely leave and return.");
+    }
+    if (action === "ai-download-prompt") {
+      const prompt = state.aiWorkspace.prompt;
+      const text = id === "primary" ? (state.aiWorkspace.promptManual || prompt.scrubbed) : ({ compact: prompt.compact, structured: prompt.structured, packet: prompt.packet, image: prompt.imageBrief, verify: prompt.verificationOnly }[id] || prompt.scrubbed);
+      downloadText(`scaffold-seeds-${id}-${new Date().toISOString().slice(0, 10)}.txt`, AI.privacyScan(text).scrubbed);
+      toast("Prompt downloaded as plain text.");
+    }
+    if (action === "ai-rescrub-prompt") {
+      state.aiWorkspace.promptManual = AI.privacyScan(state.aiWorkspace.promptManual || state.aiWorkspace.prompt.scrubbed).scrubbed;
+      saveAIWorkspace();
+      toast("Neutral replacements applied. Review them before copying.");
+      render();
+    }
+    if (action === "ai-structure-import") structureAIImport("automatic");
+    if (action === "ai-import-plain") structureAIImport("plain");
+    if (action === "ai-manual-import") structureAIImport("manual");
+    if (action === "ai-clear-import") {
+      state.aiWorkspace.rawImport = "";
+      state.aiWorkspace.parsed = null;
+      state.aiWorkspace.verification = null;
+      state.aiWorkspace.rawPreservedAt = null;
+      saveAIWorkspace();
+      render();
+    }
+    if (action === "ai-item-decision") {
+      const current = state.aiWorkspace.parsed.sections.flatMap(section => section.items).find(item => item.id === id);
+      state.aiWorkspace.parsed = AI.setItemDecision(state.aiWorkspace.parsed, id, button.dataset.status, current?.editedText ?? current?.text);
+      state.aiWorkspace.verification = null;
+      updateAIResourceStatus("review-required");
+      saveAIWorkspace();
+      render();
+    }
+    if (action === "ai-decide-section") {
+      state.aiWorkspace.parsed = AI.decideSection(state.aiWorkspace.parsed, id, button.dataset.status);
+      state.aiWorkspace.verification = null;
+      updateAIResourceStatus("review-required");
+      saveAIWorkspace();
+      render();
+    }
+    if (action === "ai-compare-section") { state.aiWorkspace.comparisonSection = id; saveAIWorkspace(); render(); }
+    if (action === "ai-trim") {
+      state.aiWorkspace.parsed = AI.trimContent(state.aiWorkspace.parsed, id);
+      state.aiWorkspace.verification = null;
+      saveAIWorkspace();
+      toast("Trimming applied visibly; removed content remains recorded.");
+      render();
+    }
+    if (action === "ai-regenerate-section") {
+      const taskMap = { vocabulary: "vocabulary-set", questions: "practice-questions", answers: "verify-answer-guidance", passage: "reading-passage", scenarios: "scenario-cards", misconceptions: "misconceptions", critique: "critique-pupil-thinking", sources: "verify-quotation", instructions: "shorten-instructions", examples: "accurate-examples", "non-examples": "non-examples", "teacher-guidance": "teacher-modelling", "image-brief": "image-brief", "diagram-spec": "diagram-specification" };
+      const task = AI.taskById(taskMap[id] || "accurate-examples");
+      state.aiWorkspace.rejectedChanges = [...(state.aiWorkspace.rejectedChanges || []), ...state.aiWorkspace.parsed.sections.flatMap(section => section.items).filter(item => item.status === "rejected").map(item => item.text)].slice(-20);
+      state.aiWorkspace.options.taskId = task.id;
+      state.aiWorkspace.options.reviewLevel = task.risk;
+      state.aiWorkspace.options.contextNote = `Regenerate ${DATA.ai.sections[id]?.name || id} only. Preserve all approved content and do not reintroduce previously rejected changes: ${(state.aiWorkspace.rejectedChanges || []).slice(-5).join(" | ")}`;
+      state.aiTaskFamily = task.family;
+      prepareAIPrompt();
+    }
+    if (action === "ai-run-verification") runAIVerification();
+    if (action === "ai-toggle-finding") {
+      const item = state.aiWorkspace.verification.findings.find(finding => finding.id === id);
+      if (item?.severity === "do-not-use" && !item.resolved) { toast("Correct the serious issue, then re-run local checks."); return; }
+      if (item) item.resolved = !item.resolved;
+      recomputeVerificationSummary(state.aiWorkspace.verification);
+      saveAIWorkspace();
+      render();
+    }
+    if (action === "ai-correct-finding") {
+      const item = state.aiWorkspace.verification.findings.find(finding => finding.id === id);
+      if (item?.title === "Local representation is malformed") {
+        state.createStep = 4;
+        toast("Correct the local diagram in the Scaffold Designer, then return and re-run checks.");
+        navigate("create");
+        return;
+      }
+      state.aiWorkspace.comparisonSection = item?.sectionId || state.aiWorkspace.comparisonSection;
+      state.aiWorkspace.phase = "review";
+      saveAIWorkspace();
+      toast("Edit or reject the flagged content, then run verification again.");
+      render();
+    }
+    if (action === "ai-rerun-verification") {
+      state.aiWorkspace.verification = null;
+      state.aiWorkspace.approvalChecked = false;
+      runAIVerification();
+    }
+    if (action === "ai-filter-findings") { state.aiWorkspace.findingFilter = state.aiWorkspace.findingFilter === id ? "" : id; saveAIWorkspace(); render(); }
+    if (action === "ai-run-trace") { saveAIWorkspace(); render(); }
+    if (action === "ai-download-report") {
+      downloadText(`scaffold-seeds-verification-${new Date().toISOString().slice(0, 10)}.txt`, AI.verificationReport(activeForAI(), state.aiWorkspace.verification));
+      toast("Verification report downloaded.");
+    }
+    if (action === "ai-add-source") {
+      state.aiWorkspace.sourceRecords = [...(state.aiWorkspace.sourceRecords || []), AI.makeSourceRecord("", "unverified")];
+      saveAIWorkspace();
+      render();
+    }
+    if (action === "ai-remove-source") {
+      state.aiWorkspace.sourceRecords = (state.aiWorkspace.sourceRecords || []).filter(record => record.id !== id);
+      saveAIWorkspace();
+      render();
+    }
+    if (action === "ai-apply-content") applyAIContent();
+    if (action === "ai-rotate-image" && state.aiWorkspace.image) { state.aiWorkspace.image.rotation = ((state.aiWorkspace.image.rotation || 0) + 90) % 360; saveAIWorkspace(); render(); }
+    if (action === "ai-toggle-greyscale" && state.aiWorkspace.image) { state.aiWorkspace.image.greyscale = !state.aiWorkspace.image.greyscale; saveAIWorkspace(); render(); }
+    if (action === "ai-remove-image") { state.aiWorkspace.image = null; saveAIWorkspace(); render(); }
+    if (action === "reset-ai-preferences") {
+      delete state.preferences.aiTask;
+      state.settings.aiPromptDepth = "professional";
+      writeStore(STORAGE.preferences, state.preferences);
+      writeStore(STORAGE.settings, state.settings);
+      if (activeForAI()) resetAIWorkspace(activeForAI());
+      toast("AI Companion defaults reset.");
+      render();
+    }
     if (action === "edit-design") {
       state.createStep = 4;
-      render();
+      navigate("create");
     }
     if (action === "start-again") newScaffold();
     if (action === "save-reflection") {
@@ -1993,12 +2492,37 @@ Return the requested ${task.name.toLowerCase()} enhancement first, followed by a
       render();
     }
     if (action === "clear-library-filters") {
-      state.libraryFilters = { query: "", year: "all", subject: "all", family: "all", format: "all", stage: "all", favourite: false, archived: state.libraryFilters.archived, sort: "edited" };
+      state.libraryFilters = { query: "", year: "all", subject: "all", family: "all", format: "all", stage: "all", aiStatus: "all", source: "all", favourite: false, archived: state.libraryFilters.archived, sort: "edited" };
       render();
     }
     if (action === "library-view") {
       state.libraryFilters.archived = id === "archived";
       state.libraryFilters.query = "";
+      state.librarySelection = [];
+      render();
+    }
+    if (action === "batch-clear") { state.librarySelection = []; render(); }
+    if (action === "batch-export") {
+      const resources = state.library.filter(item => state.librarySelection.includes(item.id)).map(item => AI.portableResource(item, { excludeHistory: !state.settings.aiIncludeResponseHistory }).resource);
+      downloadText(`scaffold-seeds-selected-${new Date().toISOString().slice(0, 10)}.json`, JSON.stringify({ product: "Scaffold Seeds", schemaVersion: 4, exportedAt: new Date().toISOString(), resources }, null, 2), "application/json");
+      toast(`${resources.length} selected resource${resources.length === 1 ? "" : "s"} exported.`);
+    }
+    if (action === "batch-reviewed") {
+      let count = 0;
+      state.library.filter(item => state.librarySelection.includes(item.id)).forEach(item => {
+        const unresolvedHighRisk = item.ai?.lastVerification?.findings?.some(finding => !finding.resolved && ["important", "do-not-use"].includes(finding.severity));
+        if (!unresolvedHighRisk) { item.ai = { ...(item.ai || {}), batchReviewedAt: new Date().toISOString() }; count += 1; }
+      });
+      writeStore(STORAGE.library, state.library);
+      toast(`${count} resource${count === 1 ? "" : "s"} marked reviewed. No resource was bulk approved.`);
+      render();
+    }
+    if (action === "batch-archive") {
+      const archive = !state.libraryFilters.archived;
+      state.library.filter(item => state.librarySelection.includes(item.id)).forEach(item => { item.archived = archive; item.updatedAt = new Date().toISOString(); });
+      writeStore(STORAGE.library, state.library);
+      state.librarySelection = [];
+      toast(archive ? "Selected resources archived." : "Selected resources restored.");
       render();
     }
     if (action === "knowledge-subject") {
@@ -2038,17 +2562,54 @@ Return the requested ${task.name.toLowerCase()} enhancement first, followed by a
     if (action === "export-data") exportData();
     if (action === "clear-data") clearData();
     if (action === "close-modal") closeModal();
-    if (action === "copy-ai-prompt") {
-      const output = document.getElementById("ai-prompt-output");
-      if (output) {
-        const fallback = () => { output.select(); document.execCommand?.("copy"); toast("AI prompt copied."); };
-        if (navigator.clipboard?.writeText) navigator.clipboard.writeText(output.value).then(() => toast("AI prompt copied."), fallback);
-        else fallback();
-      }
-    }
   });
 
   document.addEventListener("input", event => {
+    const aiOption = event.target.closest("[data-ai-option]");
+    if (aiOption && aiOption.tagName !== "SELECT") {
+      const key = aiOption.dataset.aiOption;
+      state.aiWorkspace.options[key] = ["quantity", "maxWords", "modellingLimit"].includes(key) ? Number(aiOption.value) : aiOption.value;
+      if (key !== "traceAlgorithm") state.aiWorkspace.prompt = null;
+      scheduleAIWorkspaceSave();
+      return;
+    }
+    const aiRaw = event.target.closest("[data-ai-raw-import]");
+    if (aiRaw) {
+      state.aiWorkspace.rawImport = aiRaw.value;
+      state.aiWorkspace.parsed = null;
+      state.aiWorkspace.verification = null;
+      scheduleAIWorkspaceSave();
+      return;
+    }
+    const aiPromptManual = event.target.closest("[data-ai-prompt-manual]");
+    if (aiPromptManual) {
+      state.aiWorkspace.promptManual = aiPromptManual.value;
+      scheduleAIWorkspaceSave();
+      return;
+    }
+    const aiItem = event.target.closest("[data-ai-item-edit]");
+    if (aiItem) {
+      const item = state.aiWorkspace.parsed?.sections.flatMap(section => section.items).find(entry => entry.id === aiItem.dataset.aiItemEdit);
+      if (item) { item.editedText = AI.sanitiseRaw(aiItem.value).slice(0, 5000); item.status = "edited"; }
+      state.aiWorkspace.verification = null;
+      scheduleAIWorkspaceSave();
+      return;
+    }
+    const aiImageField = event.target.closest("[data-ai-image-field]");
+    if (aiImageField && aiImageField.tagName !== "SELECT" && state.aiWorkspace.image) {
+      state.aiWorkspace.image[aiImageField.dataset.aiImageField] = aiImageField.value.slice(0, 500);
+      scheduleAIWorkspaceSave();
+      return;
+    }
+    const aiRoundName = event.target.closest("[data-ai-round-name]");
+    if (aiRoundName) { state.aiWorkspace.roundName = aiRoundName.value.slice(0, 120); scheduleAIWorkspaceSave(); return; }
+    const aiSourceField = event.target.closest("[data-ai-source-field]");
+    if (aiSourceField && aiSourceField.tagName !== "SELECT") {
+      const record = (state.aiWorkspace.sourceRecords || []).find(item => item.id === aiSourceField.dataset.sourceId);
+      if (record) record[aiSourceField.dataset.aiSourceField] = aiSourceField.value.slice(0, 800);
+      scheduleAIWorkspaceSave();
+      return;
+    }
     const contentField = event.target.closest("[data-content-field]");
     if (contentField && contentField.tagName !== "SELECT") {
       const key = contentField.dataset.contentField;
@@ -2062,11 +2623,6 @@ Return the requested ${task.name.toLowerCase()} enhancement first, followed by a
         const scaffold = { ...scaffoldFromDraft(), content: state.draft.content, diagram: { ...state.draft.diagram, type: state.draft.content.diagramType, labels: state.draft.content.diagramLabels } };
         preview.innerHTML = renderResourceDocument(scaffold);
       }
-      return;
-    }
-    const aiPromptField = event.target.closest("[data-ai-prompt-edit]");
-    if (aiPromptField) {
-      state.aiPromptEdit = aiPromptField.value;
       return;
     }
     const settingField = event.target.closest("[data-setting-field]");
@@ -2101,6 +2657,78 @@ Return the requested ${task.name.toLowerCase()} enhancement first, followed by a
   });
 
   document.addEventListener("change", event => {
+    const librarySelect = event.target.closest("[data-library-select]");
+    if (librarySelect) {
+      const resourceId = librarySelect.dataset.librarySelect;
+      state.librarySelection = librarySelect.checked
+        ? [...new Set([...state.librarySelection, resourceId])]
+        : state.librarySelection.filter(id => id !== resourceId);
+      render();
+      return;
+    }
+    const aiOption = event.target.closest("[data-ai-option]");
+    if (aiOption) {
+      const key = aiOption.dataset.aiOption;
+      state.aiWorkspace.options[key] = ["quantity", "maxWords", "modellingLimit"].includes(key) ? Number(aiOption.value) : aiOption.value;
+      if (key === "depth") state.settings.aiPromptDepth = aiOption.value;
+      if (key !== "traceAlgorithm") state.aiWorkspace.prompt = null;
+      saveAIWorkspace();
+      render();
+      return;
+    }
+    const aiKnowledge = event.target.closest("[data-ai-knowledge]");
+    if (aiKnowledge) {
+      const id = aiKnowledge.dataset.aiKnowledge;
+      const selected = state.aiWorkspace.options.selectedKnowledge || [];
+      state.aiWorkspace.options.selectedKnowledge = aiKnowledge.checked ? [...new Set([...selected, id])] : selected.filter(item => item !== id);
+      state.aiWorkspace.prompt = null;
+      saveAIWorkspace();
+      return;
+    }
+    const aiSectionMap = event.target.closest("[data-ai-section-map]");
+    if (aiSectionMap) {
+      state.aiWorkspace.parsed = AI.mapSection(state.aiWorkspace.parsed, Number(aiSectionMap.dataset.index), aiSectionMap.value);
+      state.aiWorkspace.verification = null;
+      saveAIWorkspace();
+      render();
+      return;
+    }
+    const aiCompare = event.target.closest("[data-ai-compare-select]");
+    if (aiCompare) { state.aiWorkspace.comparisonSection = aiCompare.value; saveAIWorkspace(); render(); return; }
+    const aiApproval = event.target.closest("[data-ai-approval]");
+    if (aiApproval) { state.aiWorkspace.approvalChecked = aiApproval.checked; saveAIWorkspace(); render(); return; }
+    const aiApprovalScope = event.target.closest("[data-ai-approval-scope]");
+    if (aiApprovalScope) { state.aiWorkspace.approvalScope = aiApprovalScope.value; saveAIWorkspace(); return; }
+    const aiImageField = event.target.closest("[data-ai-image-field]");
+    if (aiImageField && state.aiWorkspace.image) { state.aiWorkspace.image[aiImageField.dataset.aiImageField] = aiImageField.value; saveAIWorkspace(); render(); return; }
+    const aiSourceField = event.target.closest("[data-ai-source-field]");
+    if (aiSourceField) {
+      const record = (state.aiWorkspace.sourceRecords || []).find(item => item.id === aiSourceField.dataset.sourceId);
+      if (record) record[aiSourceField.dataset.aiSourceField] = aiSourceField.value.slice(0, 800);
+      saveAIWorkspace();
+      return;
+    }
+    const aiImageFile = event.target.closest("[data-ai-image-file]");
+    if (aiImageFile) {
+      const file = aiImageFile.files?.[0];
+      if (!file) return;
+      if (!/^image\/(png|jpeg|webp)$/.test(file.type) || file.size > 2500000) { toast("Choose a PNG, JPEG or WebP under 2.5 MB."); return; }
+      const reader = new FileReader();
+      reader.onload = () => {
+        const image = new Image();
+        image.onload = () => {
+          state.aiWorkspace.image = { id: uid(), name: file.name.slice(0, 120), type: file.type, bytes: file.size, dataUrl: reader.result, width: image.naturalWidth, height: image.naturalHeight, rotation: 0, fit: "contain", caption: "", alt: "", greyscale: false, storedLocally: true, analysis: analyseLocalImage(image) };
+          saveAIWorkspace();
+          toast(file.size > 850000 ? "Image loaded locally. Its size may limit how many versions the browser can store." : "Image loaded locally. Add a caption and alt text before use.");
+          render();
+        };
+        image.onerror = () => toast("That image could not be previewed.");
+        image.src = reader.result;
+      };
+      reader.onerror = () => toast("That image could not be read.");
+      reader.readAsDataURL(file);
+      return;
+    }
     const contentField = event.target.closest("[data-content-field]");
     if (contentField) {
       const key = contentField.dataset.contentField;
@@ -2125,18 +2753,6 @@ Return the requested ${task.name.toLowerCase()} enhancement first, followed by a
       state.draft.content.hiddenSections = sectionToggle.checked ? hidden.filter(item => item !== id) : [...new Set([...hidden, id])];
       saveDraft();
       render();
-      return;
-    }
-    const aiTask = event.target.closest("[data-ai-task]");
-    if (aiTask) {
-      state.aiTask = aiTask.value;
-      state.aiPromptEdit = "";
-      render();
-      return;
-    }
-    const importType = event.target.closest("[data-import-type]");
-    if (importType) {
-      state.importType = importType.value;
       return;
     }
     const printStage = event.target.closest("[data-print-stage]");
@@ -2213,6 +2829,8 @@ Return the requested ${task.name.toLowerCase()} enhancement first, followed by a
       else closeSidebar();
     }
   });
+  window.addEventListener("pagehide", () => { if (state.aiWorkspace) saveAIWorkspace(); saveDraft(); });
+  document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") { if (state.aiWorkspace) saveAIWorkspace(); saveDraft(); } });
 
   applySettings();
   hydrateIcons(document);
