@@ -5,6 +5,8 @@
   const RESOURCE = window.ScaffoldResourceEngine;
   const VERIFY = window.ScaffoldVerificationEngine;
   const AI = window.ScaffoldAICompanion;
+  const PERSISTENCE = window.ScaffoldPersistence;
+  const startupRecovery = [];
   const STORAGE = {
     library: "scaffold-seeds.library.v1",
     settings: "scaffold-seeds.settings.v1",
@@ -13,7 +15,7 @@
     archives: "scaffold-seeds.archives.v3",
     preferences: "scaffold-seeds.preferences.v3",
     aiWorkspace: "scaffold-seeds.ai-workspace.v4",
-    schema: "scaffold-seeds.schema.v4"
+    schema: "scaffold-seeds.schema.v5"
   };
 
   const defaultSettings = {
@@ -21,14 +23,13 @@
     largeText: false,
     reduceMotion: false,
     defaultPaper: "a4",
-    defaultColour: "colour",
+    defaultColour: "full-colour",
     defaultStage: "sprout",
     interfaceScale: "standard",
     preferredDensity: "calm",
     typicalYear: "Year 4",
     favouriteSubjects: ["english", "mathematics"],
     includeTeacherGuidance: true,
-    includeAnswers: false,
     defaultGrowthStages: ["sprout"],
     lineThickness: "standard",
     pageNumbers: true,
@@ -39,11 +40,67 @@
     aiIncludeResponseHistory: true
   };
 
+  function normalisePrintMode(value) {
+    const aliased = DATA.build5?.printModeAliases?.[value] || value;
+    return DATA.build5?.printModes?.some(mode => mode.id === aliased) ? aliased : "full-colour";
+  }
+
+  function normaliseSettings(raw) {
+    const source = raw && typeof raw === "object" ? raw : {};
+    const settings = { ...defaultSettings, ...source };
+    settings.defaultPaper = ["a4", "a5"].includes(settings.defaultPaper) ? settings.defaultPaper : "a4";
+    settings.defaultColour = normalisePrintMode(settings.defaultColour);
+    settings.defaultStage = DATA.stages.some(stage => stage.id === settings.defaultStage) ? settings.defaultStage : "sprout";
+    settings.typicalYear = DATA.years.includes(settings.typicalYear) ? settings.typicalYear : "Year 4";
+    settings.preferredDensity = DATA.build3.densityModes.includes(settings.preferredDensity) ? settings.preferredDensity : "calm";
+    settings.lineThickness = ["standard", "strong"].includes(settings.lineThickness) ? settings.lineThickness : "standard";
+    settings.terminology = ["pupils", "children", "learners"].includes(settings.terminology) ? settings.terminology : "pupils";
+    settings.aiPromptDepth = DATA.ai.promptDepths.some(depth => depth.id === settings.aiPromptDepth) ? settings.aiPromptDepth : "professional";
+    settings.defaultGrowthStages = Array.isArray(settings.defaultGrowthStages) ? settings.defaultGrowthStages.filter(id => DATA.stages.some(stage => stage.id === id)) : ["sprout"];
+    if (!settings.defaultGrowthStages.length) settings.defaultGrowthStages = ["sprout"];
+    settings.favouriteSubjects = Array.isArray(settings.favouriteSubjects) ? settings.favouriteSubjects.filter(id => DATA.subjects.some(subject => subject.id === id)) : ["english", "mathematics"];
+    ["highContrast", "largeText", "reduceMotion", "includeTeacherGuidance", "pageNumbers", "aiIncludeResponseHistory"].forEach(key => { settings[key] = Boolean(settings[key]); });
+    settings.schoolLabel = String(settings.schoolLabel || "").slice(0, 120);
+    settings.classLabel = String(settings.classLabel || "").slice(0, 120);
+    return settings;
+  }
+
+  function normaliseLocalImage(raw) {
+    if (!raw || typeof raw !== "object") return null;
+    const dataUrl = String(raw.dataUrl || "");
+    if (dataUrl.length > 3600000 || !/^data:image\/(png|jpeg|webp);base64,[a-z0-9+/=]+$/i.test(dataUrl)) return null;
+    const rotation = [0, 90, 180, 270].includes(Number(raw.rotation)) ? Number(raw.rotation) : 0;
+    return {
+      ...raw,
+      id: String(raw.id || uid()).slice(0, 100),
+      name: String(raw.name || "Local image").slice(0, 120),
+      type: ["image/png", "image/jpeg", "image/webp"].includes(raw.type) ? raw.type : "image/png",
+      bytes: Math.max(0, Math.min(2500000, Number(raw.bytes) || 0)),
+      dataUrl,
+      width: Math.max(0, Math.min(20000, Number(raw.width) || 0)),
+      height: Math.max(0, Math.min(20000, Number(raw.height) || 0)),
+      rotation,
+      fit: ["contain", "cover"].includes(raw.fit) ? raw.fit : "contain",
+      caption: String(raw.caption || "").slice(0, 500),
+      alt: String(raw.alt || "").slice(0, 500),
+      greyscale: Boolean(raw.greyscale),
+      storedLocally: true
+    };
+  }
+
+  function safeAIWorkspace(scaffold, saved) {
+    const workspace = AI.createWorkspace(scaffold || {}, saved && typeof saved === "object" ? saved : null);
+    workspace.rawImport = String(workspace.rawImport || "").slice(0, 65000);
+    if (workspace.parsed?.raw) workspace.parsed.raw = String(workspace.parsed.raw).slice(0, 65000);
+    workspace.image = normaliseLocalImage(workspace.image);
+    return workspace;
+  }
+
   const state = {
     view: "home",
     createStep: 0,
     library: migrateLibrary(readStore(STORAGE.library, [])),
-    settings: { ...defaultSettings, ...readStore(STORAGE.settings, {}) },
+    settings: normaliseSettings(readStore(STORAGE.settings, {})),
     reflections: readStore(STORAGE.reflections, {}),
     archives: readStore(STORAGE.archives, []),
     preferences: readStore(STORAGE.preferences, { largerWritingArea: false, questionPrompts: false, printMode: "" }),
@@ -51,46 +108,48 @@
     activeScaffold: null,
     libraryFilters: { query: "", year: "all", subject: "all", family: "all", format: "all", stage: "all", aiStatus: "all", source: "all", favourite: false, archived: false, sort: "edited" },
     librarySelection: [],
+    libraryVisible: 60,
     knowledgeSubject: "english",
     knowledgeProfile: "reading",
     knowledgeLens: "ideas",
     print: {
       paper: "a4",
       orientation: "portrait",
-      colour: "colour",
+      colour: "full-colour",
       format: "workpage",
       teacherGuidance: true,
-      answers: false,
       largePrint: false,
-      photocopy: false,
       cropMarks: false,
       cutLines: true,
-      duplex: false,
       arrangement: "single",
       stages: ["sprout"]
     },
     saveStatus: "saved",
     compareStages: false,
     aiWorkspace: readStore(STORAGE.aiWorkspace, null),
-    aiTaskFamily: "generate"
+    aiTaskFamily: "generate",
+    pendingImport: null,
+    recoveryNoticeDismissed: false
   };
 
   state.print.paper = state.settings.defaultPaper;
   state.print.colour = state.settings.defaultColour;
   state.print.teacherGuidance = state.settings.includeTeacherGuidance;
-  state.print.answers = state.settings.includeAnswers;
   state.print.stages = [...state.settings.defaultGrowthStages];
   if (!state.activeScaffold && state.library.length) state.activeScaffold = state.library[0];
   const activeWorkspaceKey = state.activeScaffold?.id ? `${STORAGE.aiWorkspace}.${state.activeScaffold.id}` : STORAGE.aiWorkspace;
-  const activeWorkspaceSaved = readStore(activeWorkspaceKey, null) || (state.aiWorkspace?.schemaVersion === 4 ? state.aiWorkspace : null);
-  state.aiWorkspace = AI.createWorkspace(state.activeScaffold || {}, activeWorkspaceSaved);
+  const activeWorkspaceSaved = readStore(activeWorkspaceKey, null) || ([4, 5].includes(state.aiWorkspace?.schemaVersion) ? state.aiWorkspace : null);
+  state.aiWorkspace = safeAIWorkspace(state.activeScaffold || {}, activeWorkspaceSaved);
 
   const main = document.getElementById("main-content");
   const modalLayer = document.getElementById("modal-layer");
   const toastRegion = document.getElementById("toast-region");
   const sidebar = document.getElementById("sidebar");
   const scrim = document.getElementById("sidebar-scrim");
-  try { localStorage.setItem(STORAGE.schema, JSON.stringify({ version: 4, migratedAt: new Date().toISOString(), previousLibraryKey: STORAGE.library })); } catch (error) { /* Storage status is surfaced on the first attempted save. */ }
+  const appShell = document.querySelector(".app-shell");
+  const menuButton = document.getElementById("menu-button");
+  let modalReturnFocus = null;
+  try { localStorage.setItem(STORAGE.schema, JSON.stringify({ version: 5, migratedAt: new Date().toISOString(), previousLibraryKey: STORAGE.library })); } catch (error) { /* Storage status is surfaced on the first attempted save. */ }
 
   const viewMeta = {
     home: ["Your thinking space", "Home"],
@@ -135,21 +194,61 @@
 
   function migrateLibrary(items) {
     if (!Array.isArray(items)) return [];
-    return items.filter(item => item && typeof item === "object").map(item => ({
-      ...item,
-      versions: Array.isArray(item.versions) ? item.versions.slice(0, 20) : [],
-      sources: Array.isArray(item.sources) ? item.sources : [],
-      assets: Array.isArray(item.assets) ? item.assets : [],
-      ai: item.ai && typeof item.ai === "object" ? {
-        schemaVersion: 4,
-        rounds: Array.isArray(item.ai.rounds) ? item.ai.rounds.slice(0, 20) : [],
-        provenance: Array.isArray(item.ai.provenance) ? item.ai.provenance.slice(0, 100) : [],
-        ...item.ai
-      } : null
-    }));
+    const subjects = new Set(DATA.subjects.map(item => item.id));
+    const years = new Set(DATA.years);
+    const engines = new Set(DATA.engines.map(item => item.id));
+    const stages = new Set(DATA.stages.map(item => item.id));
+    const formats = new Set(DATA.printFormats.map(item => item.id));
+    const migrated = [];
+    items.forEach((item, index) => {
+      if (!item || typeof item !== "object" || !subjects.has(item.subject) || typeof item.title !== "string") {
+        startupRecovery.push(`Library record ${index + 1} was quarantined because its title or subject was invalid.`);
+        return;
+      }
+      const ai = item.ai && typeof item.ai === "object" ? {
+        ...item.ai,
+        schemaVersion: 5,
+        rounds: Array.isArray(item.ai.rounds) ? item.ai.rounds.filter(round => round && typeof round === "object").slice(0, 20) : [],
+        provenance: Array.isArray(item.ai.provenance) ? item.ai.provenance.filter(record => record && typeof record === "object").slice(0, 100) : [],
+        lastVerification: item.ai.lastVerification && typeof item.ai.lastVerification === "object" ? item.ai.lastVerification : null
+      } : null;
+      const reflectionHistory = Array.isArray(item.reflections) ? item.reflections : item.reflection && typeof item.reflection === "object" ? [item.reflection] : [];
+      migrated.push({
+        ...item,
+        id: typeof item.id === "string" && item.id ? item.id : uid(),
+        title: item.title.trim().slice(0, 140) || "Untitled scaffold",
+        year: years.has(item.year) ? item.year : "Year 4",
+        objective: String(item.objective || "").slice(0, 500),
+        topic: String(item.topic || "Curriculum focus").slice(0, 180),
+        engineId: engines.has(item.engineId) ? item.engineId : DATA.engines.find(engine => engine.subjects.includes(item.subject) || engine.subjects.includes("all"))?.id || DATA.engines[0].id,
+        stage: stages.has(item.stage) ? item.stage : "sprout",
+        format: formats.has(item.format) ? item.format : "workpage",
+        barriers: Array.isArray(item.barriers) ? item.barriers.filter(id => DATA.barriers.some(barrier => barrier.id === id)).slice(0, 6) : [],
+        tags: Array.isArray(item.tags) ? item.tags.map(String).slice(0, 8) : [],
+        growthStages: Array.isArray(item.growthStages) ? item.growthStages.filter(id => stages.has(id)) : DATA.stages.map(stage => stage.id),
+        content: item.content && typeof item.content === "object" ? item.content : {},
+        diagram: item.diagram && typeof item.diagram === "object" ? item.diagram : { type: "", labels: [], values: [] },
+        versions: Array.isArray(item.versions) ? item.versions.filter(version => version && typeof version === "object" && version.snapshot && typeof version.snapshot === "object").slice(0, 20) : [],
+        reflections: reflectionHistory.filter(reflection => reflection && typeof reflection === "object").slice(0, 30),
+        reflection: reflectionHistory.find(reflection => reflection && typeof reflection === "object") || null,
+        sources: Array.isArray(item.sources) ? item.sources.filter(source => source && typeof source === "object").slice(0, 100) : [],
+        assets: Array.isArray(item.assets) ? item.assets.filter(asset => asset && typeof asset === "object").slice(0, 30) : [],
+        ai,
+        schemaVersion: 5,
+        revision: Number.isInteger(item.revision) && item.revision > 0 ? item.revision : 1
+      });
+    });
+    return migrated;
   }
 
   let aiSaveTimer = null;
+  let librarySearchTimer = null;
+  const failedStores = new Set();
+  let durableSaveTimer = null;
+  let durableGeneration = 0;
+  let durableReady = false;
+  let durableCommitInFlight = false;
+  let suppressDurable = false;
 
   function saveAIWorkspace() {
     if (aiSaveTimer) clearTimeout(aiSaveTimer);
@@ -157,7 +256,7 @@
     state.aiWorkspace.lastSavedAt = new Date().toISOString();
     if (state.aiWorkspace.resourceId) {
       writeStore(`${STORAGE.aiWorkspace}.${state.aiWorkspace.resourceId}`, state.aiWorkspace);
-      writeStore(STORAGE.aiWorkspace, { schemaVersion: 4, resourceId: state.aiWorkspace.resourceId, lastSavedAt: state.aiWorkspace.lastSavedAt });
+      writeStore(STORAGE.aiWorkspace, { schemaVersion: 5, resourceId: state.aiWorkspace.resourceId, lastSavedAt: state.aiWorkspace.lastSavedAt });
     } else writeStore(STORAGE.aiWorkspace, state.aiWorkspace);
   }
 
@@ -186,7 +285,7 @@
   }
 
   function resetAIWorkspace(scaffold = activeForAI()) {
-    state.aiWorkspace = AI.createWorkspace(scaffold || {});
+    state.aiWorkspace = safeAIWorkspace(scaffold || {});
     state.aiTaskFamily = AI.taskById(state.aiWorkspace.options.taskId).family;
     saveAIWorkspace();
   }
@@ -196,6 +295,11 @@
       const raw = localStorage.getItem(key);
       return raw ? JSON.parse(raw) : fallback;
     } catch (error) {
+      try {
+        const raw = localStorage.getItem(key);
+        if (raw) sessionStorage.setItem(`scaffold-seeds.corrupt.${Date.now()}`, JSON.stringify({ key, raw: raw.slice(0, 250000), capturedAt: new Date().toISOString() }));
+      } catch (recoveryError) { /* The in-memory fallback remains available. */ }
+      startupRecovery.push(`${key.replace("scaffold-seeds.", "")} could not be read and was isolated rather than erased.`);
       return fallback;
     }
   }
@@ -204,12 +308,115 @@
     try {
       setSaveStatus("saving");
       localStorage.setItem(key, JSON.stringify(value));
-      setSaveStatus("saved");
+      failedStores.delete(key);
+      setSaveStatus(failedStores.size ? "issue" : "saved");
+      scheduleDurableCommit();
       return true;
     } catch (error) {
+      failedStores.add(key);
       setSaveStatus("issue");
       toast("Browser storage is unavailable. Your changes remain in this session.");
       return false;
+    }
+  }
+
+  function durableBundle() {
+    let aiWorkspaces = {};
+    try { aiWorkspaces = storedAIWorkspaces(state.settings.aiIncludeResponseHistory); } catch (error) { /* The active workspace is still included below. */ }
+    if (state.aiWorkspace?.resourceId) aiWorkspaces[state.aiWorkspace.resourceId] = safeAIWorkspace(state.activeScaffold || {}, state.aiWorkspace);
+    return {
+      product: "Scaffold Seeds",
+      schemaVersion: 5,
+      exportedAt: new Date().toISOString(),
+      library: state.library,
+      settings: normaliseSettings(state.settings),
+      reflections: state.reflections,
+      preferences: state.preferences,
+      draft: state.draft,
+      aiWorkspaces,
+      metadata: { source: "Scaffold Seeds local application" }
+    };
+  }
+
+  function scheduleDurableCommit() {
+    if (!PERSISTENCE || !durableReady || suppressDurable) return;
+    clearTimeout(durableSaveTimer);
+    setSaveStatus("saving");
+    durableSaveTimer = setTimeout(commitDurableSnapshot, 420);
+  }
+
+  async function commitDurableSnapshot() {
+    if (!PERSISTENCE || !durableReady || durableCommitInFlight) return;
+    durableCommitInFlight = true;
+    try {
+      const result = await PERSISTENCE.commitSnapshot(durableBundle(), { expectedGeneration: durableGeneration, createRecovery: false });
+      durableGeneration = Number(result.snapshot?.metadata?.generation || durableGeneration + 1);
+      failedStores.delete("durable");
+      setSaveStatus(failedStores.size ? "issue" : "saved");
+    } catch (error) {
+      failedStores.add("durable");
+      setSaveStatus("issue");
+      if (error?.name === "ConflictError" || error?.code === "REVISION_CONFLICT") toast("This library changed in another tab. Reload before saving more changes, or export a recovery copy.");
+      else toast("The durable save did not complete. Your current tab still holds the changes; export a recovery copy if the issue continues.");
+    } finally {
+      durableCommitInFlight = false;
+    }
+  }
+
+  function newestLibraryTime(items) {
+    return Math.max(0, ...(items || []).map(item => Date.parse(item.updatedAt || item.createdAt || 0) || 0));
+  }
+
+  function cacheSnapshot(snapshot) {
+    suppressDurable = true;
+    try {
+      state.library = migrateLibrary(snapshot.library || []);
+      state.settings = normaliseSettings(snapshot.settings || {});
+      state.reflections = snapshot.reflections && typeof snapshot.reflections === "object" ? snapshot.reflections : {};
+      state.preferences = snapshot.preferences && typeof snapshot.preferences === "object" ? snapshot.preferences : {};
+      state.draft = normaliseDraft(snapshot.draft);
+      state.activeScaffold = state.library.find(item => item.id === state.activeScaffold?.id) || state.library[0] || null;
+      const savedWorkspace = state.activeScaffold?.id ? snapshot.aiWorkspaces?.[state.activeScaffold.id] : null;
+      state.aiWorkspace = safeAIWorkspace(state.activeScaffold || {}, savedWorkspace);
+      localStorage.setItem(STORAGE.library, JSON.stringify(state.library));
+      localStorage.setItem(STORAGE.settings, JSON.stringify(state.settings));
+      localStorage.setItem(STORAGE.reflections, JSON.stringify(state.reflections));
+      localStorage.setItem(STORAGE.preferences, JSON.stringify(state.preferences));
+      localStorage.setItem(STORAGE.draft, JSON.stringify(state.draft));
+      Object.entries(snapshot.aiWorkspaces || {}).forEach(([id, workspace]) => localStorage.setItem(`${STORAGE.aiWorkspace}.${id}`, JSON.stringify(workspace)));
+      applySettings();
+    } finally {
+      suppressDurable = false;
+    }
+  }
+
+  async function initialisePersistence() {
+    if (!PERSISTENCE) return;
+    try {
+      const capabilities = await PERSISTENCE.open();
+      const snapshot = await PERSISTENCE.getSnapshot();
+      durableGeneration = Number(snapshot.metadata?.generation || 0);
+      const localChecksum = PERSISTENCE.canonicalChecksumSync(state.library);
+      const durableChecksum = PERSISTENCE.canonicalChecksumSync(snapshot.library || []);
+      if (durableChecksum !== localChecksum && snapshot.library?.length && newestLibraryTime(snapshot.library) >= newestLibraryTime(state.library)) {
+        cacheSnapshot(snapshot);
+        startupRecovery.push("A newer durable library snapshot was restored after this page opened.");
+        render();
+      }
+      durableReady = true;
+      if (durableChecksum !== PERSISTENCE.canonicalChecksumSync(state.library) || durableGeneration === 0) await commitDurableSnapshot();
+      PERSISTENCE.subscribe(event => {
+        if (durableCommitInFlight || !event?.type || event.type === "recovery-created") return;
+        startupRecovery.push("Another Scaffold Seeds tab changed local data. Reload before editing the same resource; no automatic overwrite was made.");
+        state.recoveryNoticeDismissed = false;
+        if (state.view !== "create" || !state.draft.editingId) render();
+      });
+      if (!capabilities.persistent) startupRecovery.push("Durable browser storage is unavailable in this browsing mode. Export a backup before leaving.");
+    } catch (error) {
+      failedStores.add("durable");
+      setSaveStatus("issue");
+      startupRecovery.push("Durable storage could not be opened. The local cache remains available for recovery and export.");
+      render();
     }
   }
 
@@ -277,7 +484,7 @@
   }
 
   function saveDraft() {
-    writeStore(STORAGE.draft, state.draft);
+    return writeStore(STORAGE.draft, state.draft);
   }
 
   function esc(value) {
@@ -346,8 +553,8 @@
   function curriculumIntelligence(draft = state.draft) {
     const subject = subjectById(draft.subject);
     const brain = brainBySubject(draft.subject);
-    const profile = profileForDraft(draft);
     const entry = currentEntry(draft);
+    const profile = brain.profiles.find(item => item.id === entry?.profileId) || profileForDraft(draft);
     const vocabulary = [...new Set([...(entry?.vocabulary || []), ...(profile.vocabulary || [])])].slice(0, 8);
     const misconceptions = [...new Set([...(entry?.misconceptions || []), ...(profile.misconceptions || [])])];
     const preferredFamilies = profile.families.filter(id => DATA.scaffoldFamilies.some(family => family.id === id));
@@ -364,11 +571,14 @@
 
   function formatDate(dateValue) {
     const date = new Date(dateValue);
+    if (!Number.isFinite(date.getTime())) return "Unknown date";
     return new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "short", year: "numeric" }).format(date);
   }
 
   function relativeDate(dateValue) {
-    const days = Math.floor((Date.now() - new Date(dateValue).getTime()) / 86400000);
+    const time = new Date(dateValue).getTime();
+    if (!Number.isFinite(time)) return "Unknown date";
+    const days = Math.floor((Date.now() - time) / 86400000);
     if (days <= 0) return "Today";
     if (days === 1) return "Yesterday";
     if (days < 7) return `${days} days ago`;
@@ -402,27 +612,37 @@
     document.getElementById("section-kicker").textContent = viewMeta[view][0];
     document.getElementById("section-title").textContent = viewMeta[view][1];
     render();
-    closeSidebar();
+    closeSidebar(false);
     if (options.focus !== false) main.focus({ preventScroll: true });
     window.scrollTo({ top: 0, behavior: state.settings.reduceMotion ? "auto" : "smooth" });
   }
 
   function render() {
     const renderers = { home: renderHome, create: renderCreate, library: renderLibrary, knowledge: renderKnowledge, ai: renderAIStudio, print: renderPrintStudio, settings: renderSettings };
-    main.innerHTML = `<div class="view-enter">${renderers[state.view]()}</div>`;
+    const recovery = startupRecovery.length && !state.recoveryNoticeDismissed ? `<aside class="recovery-banner" role="status"><div><strong>Recovery notice</strong><p>${esc(startupRecovery[0])}${startupRecovery.length > 1 ? ` ${startupRecovery.length - 1} other record${startupRecovery.length === 2 ? "" : "s"} also need review.` : ""}</p></div><button class="button button-compact" data-action="dismiss-recovery">Dismiss</button></aside>` : "";
+    main.innerHTML = `${recovery}<div class="view-enter">${renderers[state.view]()}</div>`;
     hydrateIcons(main);
+    main.querySelectorAll('[role="tablist"]').forEach(list => {
+      const tabs = [...list.querySelectorAll('[role="tab"]')];
+      tabs.forEach((tab, index) => { tab.tabIndex = tab.getAttribute("aria-selected") === "true" || (!tabs.some(item => item.getAttribute("aria-selected") === "true") && index === 0) ? 0 : -1; });
+    });
   }
 
   function openSidebar() {
     sidebar.classList.add("is-open");
     scrim.hidden = false;
-    document.getElementById("menu-button").setAttribute("aria-expanded", "true");
+    menuButton.setAttribute("aria-expanded", "true");
+    menuButton.setAttribute("aria-label", "Close navigation");
+    requestAnimationFrame(() => sidebar.querySelector(".nav-item.is-active, .nav-item")?.focus());
   }
 
-  function closeSidebar() {
+  function closeSidebar(restoreFocus = true) {
+    const wasOpen = sidebar.classList.contains("is-open");
     sidebar.classList.remove("is-open");
     scrim.hidden = true;
-    document.getElementById("menu-button").setAttribute("aria-expanded", "false");
+    menuButton.setAttribute("aria-expanded", "false");
+    menuButton.setAttribute("aria-label", "Open navigation");
+    if (wasOpen && restoreFocus) menuButton.focus();
   }
 
   function newScaffold(preset = {}) {
@@ -558,7 +778,7 @@
       state.draft.objective = entries[0]?.objectives[0] || "";
     }
     const entry = currentEntry();
-    if (entry && !entry.objectives.includes(state.draft.objective)) state.draft.objective = entry.objectives[0];
+    if (entry && !state.draft.objective.trim()) state.draft.objective = entry.objectives[0];
     const intelligence = curriculumIntelligence();
     const frameworkNote = state.draft.subject === "religious-education" ? "Use the objective wording from your school's locally applicable RE syllabus." : state.draft.subject === "pshe" ? "Check the final objective against your school policy and the statutory guidance in force." : state.draft.subject === "languages" && !["Year 3", "Year 4", "Year 5", "Year 6"].includes(state.draft.year) ? "Languages is statutory at Key Stage 2; earlier work may be school enrichment." : "";
     return `${createHead(1, "Set the learning context", "A little precision here makes every later recommendation more useful.")}
@@ -567,14 +787,15 @@
         <div class="form-field"><label for="subject">Subject</label><div class="select-wrap"><select id="subject" data-draft-field="subject">${DATA.subjects.map(subject => `<option value="${subject.id}" ${subject.id === state.draft.subject ? "selected" : ""}>${esc(subject.name)}</option>`).join("")}</select></div></div>
         <div class="form-field"><label for="topic">Curriculum area</label><div class="select-wrap"><select id="topic" data-draft-field="topic">${entries.map(item => `<option ${item.title === state.draft.topic ? "selected" : ""}>${esc(item.title)}</option>`).join("")}</select></div></div>
         <div class="form-field"><label for="phase">Lesson phase</label><div class="select-wrap"><select id="phase" data-draft-field="phase">${DATA.lessonPhases.map(phase => `<option ${phase === state.draft.phase ? "selected" : ""}>${esc(phase)}</option>`).join("")}</select></div></div>
-        <div class="form-field span-2"><label for="objective">Learning objective <small>— curriculum-informed and fully editable</small></label><div class="select-wrap"><select id="objective" data-draft-field="objective">${(entry?.objectives || []).map(objective => `<option ${objective === state.draft.objective ? "selected" : ""}>${esc(objective)}</option>`).join("")}</select></div><input class="input" id="custom-objective" data-draft-field="objective" value="${esc(state.draft.objective)}" aria-label="Edit learning objective"><span class="field-hint">${esc(frameworkNote || "Use the wording that pupils will encounter in this lesson.")}</span></div>
+        <div class="form-field span-2"><label for="objective">Learning objective <small>— choose a suggestion or write the exact lesson focus</small></label><input class="input" id="objective" list="objective-suggestions" data-draft-field="objective" value="${esc(state.draft.objective)}"><datalist id="objective-suggestions">${(entry?.objectives || []).map(objective => `<option value="${esc(objective)}"></option>`).join("")}</datalist><span class="field-hint">${esc(frameworkNote || "Use the wording that pupils will encounter in this lesson.")}</span></div>
         <div class="form-field span-2"><label for="expected-outcome">Expected pupil outcome <small>— what successful thinking or action will be visible?</small></label><textarea id="expected-outcome" data-draft-field="expectedOutcome" rows="2">${esc(state.draft.expectedOutcome)}</textarea></div>
       </div>
       <div class="curriculum-glance" style="--subject-colour:${intelligence.subject.colour}">
         <div><span class="eyebrow">Big idea beneath this area</span><strong>${esc(intelligence.brain.bigIdeas[0])}</strong></div>
         <div><span class="eyebrow">Threshold to protect</span><p>${esc(intelligence.profile.threshold)}</p></div>
         <div><span class="eyebrow">Disciplinary thinking</span><p>${esc(intelligence.profile.disciplinary)}</p></div>
-      </div></div>
+      </div>
+      <div class="curriculum-release-note"><span class="eyebrow">${esc(state.draft.year)} progression lens</span><p>${esc(intelligence.subject.release?.yearFocus?.[state.draft.year] || "Confirm the school's intended progression and prior learning before selecting support.")}</p><small>${esc(intelligence.entry?.sourceVersion || "Teacher-confirmed curriculum context")}</small></div></div>
       ${stepFooter({ back: false, nextLabel: "Describe the barrier" })}`;
   }
 
@@ -627,7 +848,7 @@
         <div class="analysis-section"><h3>Likely barriers</h3><p>Select the barriers that best explain what you observe.</p><div class="barrier-grid">
           ${state.draft.analysis.map((result, index) => {
             const barrier = barrierById(result.id);
-            return `<button class="barrier-card ${selected.includes(result.id) ? "is-selected" : ""}" data-action="toggle-barrier" data-id="${result.id}" aria-pressed="${selected.includes(result.id)}"><span class="barrier-icon">${icon(index % 2 ? "knowledge" : "brain")}</span><span><h4>${esc(barrier.name)}</h4><p>${esc(result.reason || barrier.hint)}</p></span><span class="confidence">${index < 2 ? "Strong fit" : "Possible"}</span></button>`;
+            return `<button class="barrier-card ${selected.includes(result.id) ? "is-selected" : ""}" data-action="toggle-barrier" data-id="${result.id}" aria-pressed="${selected.includes(result.id)}"><span class="barrier-icon">${icon(index % 2 ? "knowledge" : "brain")}</span><span><h4>${esc(barrier.name)}</h4><p>${esc(result.reason || barrier.hint)}</p></span><span class="confidence">${esc(result.confidence || "Suggested")}</span></button>`;
           }).join("")}
         </div><button class="text-link" data-action="show-all-barriers">+ Review all barrier types</button>${selected.length ? `<div class="selected-barrier-order"><span class="form-label">Priority order</span>${selected.map((id, index) => `<section><span>${index + 1}</span><strong>${esc(barrierById(id)?.name || id)}</strong><div><button data-action="move-barrier" data-id="${id}" data-direction="up" aria-label="Move ${esc(barrierById(id)?.name || id)} up">↑</button><button data-action="move-barrier" data-id="${id}" data-direction="down" aria-label="Move ${esc(barrierById(id)?.name || id)} down">↓</button></div></section>`).join("")}</div>` : ""}</div>
         <div class="form-field custom-barrier-field"><label for="custom-barrier">Add or refine a barrier <small>— describe the task–pupil relationship, not a fixed label</small></label><input id="custom-barrier" class="input" data-draft-field="customBarrier" value="${esc(state.draft.customBarrier)}" placeholder="For example: the dense source layout obscures chronology"></div>
@@ -638,22 +859,10 @@
 
   function protectedThinkingStatement(draft = state.draft) {
     const profile = profileForDraft(draft);
-    const subjectStatements = {
-      english: "Pupils must still select, shape and justify the language or reading decision that creates meaning.",
-      mathematics: "Pupils must still identify the mathematical structure, choose a fitting strategy and justify why it works.",
-      science: "Pupils must still interpret the evidence and connect it to an accurate scientific idea or mechanism.",
-      history: "Pupils must still use period knowledge and evidence to form and test a historical interpretation.",
-      geography: "Pupils must still connect located evidence, scale and process to form a geographical explanation.",
-      computing: "Pupils must still design or trace the logic, diagnose behaviour and choose a test.",
-      art: "Pupils must still look, experiment and make a personal visual or material choice for an intended effect.",
-      "design-technology": "Pupils must still translate user and purpose into a functional design, test it and choose an improvement.",
-      music: "Pupils must still listen, perform or compose through sound and make a musical choice.",
-      "physical-education": "Pupils must still perceive the movement or game situation and adjust their own physical or tactical action.",
-      languages: "Pupils must still select meaning, listen and respond, while keeping the target-language pattern accurate.",
-      "religious-education": "Pupils must still use contextual knowledge to interpret diversity and form a reasoned account.",
-      pshe: "Pupils must still interpret the neutral scenario, choose a safe response and explain the route to help."
-    };
-    return subjectStatements[draft.subject] || `Pupils must still perform the central ${profile.name.toLowerCase()} decision and explain it.`;
+    const release = subjectById(draft.subject).release;
+    const protectedMove = release?.protect || `the central ${profile.name.toLowerCase()} decision`;
+    const objective = String(draft.objective || "the intended learning").replace(/[.!?]+$/, "");
+    return `Pupils must still own ${protectedMove} while working towards “${objective}”.`;
   }
 
   function renderSupportStep() {
@@ -661,13 +870,28 @@
     const intelligence = curriculumIntelligence();
     const recommended = state.draft.recommendations.map(engineById);
     const representation = intelligence.representations[0];
+    const practiceMemory = similarReflection();
     return `${createHead(4, "Choose the smallest useful support", "Three reasoned options are shown. Compare what each gives, what it leaves and how it fades.")}
       <div class="create-card-body">
         <div class="support-protection-line"><span>${icon("brain")}</span><div><strong>Still with the pupil</strong><p>${esc(state.draft.essentialThinking || protectedThinkingStatement())}</p></div></div>
+        ${practiceMemory ? `<aside class="practice-memory"><span class="eyebrow">Last time with a similar scaffold</span><strong>${esc(practiceMemory.item.title)}</strong><p>${esc(practiceMemory.reflection.whatWorked || practiceMemory.reflection.surprise || "A classroom reflection was recorded.")}</p>${practiceMemory.reflection.supportRemoved || practiceMemory.reflection.reduceNext ? `<small><b>Support to remove:</b> ${esc(practiceMemory.reflection.supportRemoved || practiceMemory.reflection.reduceNext)}</small>` : ""}</aside>` : ""}
         ${representation ? `<div class="representation-advice"><div><span class="eyebrow">Representation to consider—not force</span><h3>${esc(representation.name)}</h3><p>Useful ${esc(representation.use)}. Avoid ${esc(representation.avoid)}.</p></div><span class="advice-mark">${icon("eye")}</span></div>` : ""}
-        <div class="engine-recommendations build3-recommendations">${recommended.map((engine, index) => `<button class="engine-card engine-card-rich ${state.draft.engineId === engine.id ? "is-selected" : ""}" data-action="choose-engine" data-id="${engine.id}" aria-pressed="${state.draft.engineId === engine.id}">${index === 0 ? '<span class="best-fit">Best fit</span>' : ""}<span class="engine-number">${String(index + 1).padStart(2, "0")}</span><span class="family-label">${esc(familyById(engine.family).name)}</span><h4>${esc(engine.name)}</h4><p>${esc(engine.tagline)}</p><small><strong>Supports:</strong> ${esc(engine.bestFor || engine.tagline)}</small><small class="preserve-line"><strong>Leaves:</strong> ${esc(engine.preserves || state.draft.essentialThinking)}</small><small><strong>Best now:</strong> ${esc(state.draft.phase)}</small><small class="risk-line"><strong>Watch:</strong> ${esc(engine.risk || "Remove prompts as soon as the central decision is secure.")}</small><small><strong>Fade:</strong> ${esc(RESOURCE.nextFade({ ...scaffoldFromDraft(), engineId: engine.id, stage: state.settings.defaultStage }))}</small></button>`).join("")}</div>
+        <div class="engine-recommendations engine-recommendation-grid">${recommended.map((engine, index) => `<button class="engine-card engine-card-rich ${state.draft.engineId === engine.id ? "is-selected" : ""}" data-action="choose-engine" data-id="${engine.id}" aria-pressed="${state.draft.engineId === engine.id}">${index === 0 ? '<span class="best-fit">Suggested first</span>' : ""}<span class="engine-number">${String(index + 1).padStart(2, "0")}</span><span class="family-label">${esc(familyById(engine.family).name)}</span><h4>${esc(engine.name)}</h4><p>${esc(engine.tagline)}</p><small><strong>Supports:</strong> ${esc(engine.bestFor || engine.tagline)}</small><small class="preserve-line"><strong>Leaves:</strong> ${esc(engine.preserves || state.draft.essentialThinking)}</small><small><strong>Best now:</strong> ${esc(state.draft.phase)}</small><small class="risk-line"><strong>Watch:</strong> ${esc(engine.risk || "Remove prompts as soon as the central decision is secure.")}</small><small><strong>Fade:</strong> ${esc(RESOURCE.nextFade({ ...scaffoldFromDraft(), engineId: engine.id, stage: state.settings.defaultStage }))}</small></button>`).join("")}</div>
         <button class="text-link" data-action="show-all-engines">Browse all ${DATA.engines.length} professional engines</button>
       </div>${stepFooter({ nextLabel: "Open the live designer" })}`;
+  }
+
+  function renderDiagramValueControls(type) {
+    if (!type) return "";
+    const diagram = state.draft.diagram || {};
+    const values = `<div class="form-field"><label for="diagram-values">Diagram values <small>— comma separated; used for deterministic checks</small></label><input id="diagram-values" class="input" inputmode="decimal" data-diagram-field="values" data-list-mode="numbers" value="${esc((diagram.values || []).join(", "))}"></div>`;
+    if (["number-line", "timeline", "part-whole", "bar-model"].includes(type)) {
+      const total = type === "bar-model" ? `<div class="form-field"><label for="diagram-total">Stated whole <small>— optional check</small></label><input id="diagram-total" class="input" inputmode="decimal" data-diagram-field="total" value="${esc(diagram.total ?? "")}"></div>` : "";
+      return `${values}${total}<p class="diagram-check-note">${type === "timeline" ? "Supplied values create proportional spacing; without them the timeline is marked schematic." : "When values are supplied, Scaffold Seeds checks the numerical relationship rather than only the shape."}</p>`;
+    }
+    if (type === "fraction-strip") return `<div class="form-grid compact-fields"><div class="form-field"><label for="diagram-parts">Equal parts</label><input id="diagram-parts" class="input" type="number" min="2" max="24" data-diagram-field="parts" value="${esc(diagram.parts || 4)}"></div><div class="form-field"><label for="diagram-numerator">Shaded parts</label><input id="diagram-numerator" class="input" type="number" min="0" max="24" data-diagram-field="numerator" value="${esc(diagram.numerator ?? 0)}"></div></div>`;
+    if (type === "array") return `<div class="form-grid compact-fields"><div class="form-field"><label for="diagram-rows">Rows</label><input id="diagram-rows" class="input" type="number" min="1" max="12" data-diagram-field="rows" value="${esc(diagram.rows || 3)}"></div><div class="form-field"><label for="diagram-columns">Columns</label><input id="diagram-columns" class="input" type="number" min="1" max="12" data-diagram-field="columns" value="${esc(diagram.columns || 5)}"></div><div class="form-field"><label for="diagram-total">Stated total <small>— optional check</small></label><input id="diagram-total" class="input" inputmode="numeric" data-diagram-field="total" value="${esc(diagram.total ?? "")}"></div></div>`;
+    return `<p class="diagram-check-note">This diagram is checked for structure and label length. Subject accuracy still requires teacher review.</p>`;
   }
 
   function renderDesignStep() {
@@ -684,7 +908,7 @@
     if (!state.draft.essentialThinking) state.draft.essentialThinking = protectedThinkingStatement();
     const generated = RESOURCE.normalise(scaffoldFromDraft());
     const currentContent = state.draft.content || {};
-    if (!currentContent.instruction) state.draft.content = { ...generated.content, ...currentContent, instruction: generated.content.instruction, prompts: currentContent.prompts?.length ? currentContent.prompts : generated.content.prompts, vocabulary: currentContent.vocabulary?.length ? currentContent.vocabulary : generated.content.vocabulary, example: currentContent.example || generated.content.example, subInstruction: currentContent.subInstruction || generated.content.subInstruction, misconception: currentContent.misconception || generated.content.misconception, oralPrompt: currentContent.oralPrompt || generated.content.oralPrompt, checkPrompt: currentContent.checkPrompt || generated.content.checkPrompt, independencePrompt: currentContent.independencePrompt || generated.content.independencePrompt, diagramType: currentContent.diagramType || engine.diagram || "" };
+    if (!currentContent.instruction) state.draft.content = { ...generated.content, ...currentContent, instruction: generated.content.instruction, prompts: currentContent.prompts?.length ? currentContent.prompts : generated.content.prompts, coreTask: currentContent.coreTask || generated.content.coreTask, vocabulary: currentContent.vocabulary?.length ? currentContent.vocabulary : generated.content.vocabulary, example: currentContent.example || generated.content.example, subInstruction: currentContent.subInstruction || generated.content.subInstruction, misconception: currentContent.misconception || generated.content.misconception, oralPrompt: currentContent.oralPrompt || generated.content.oralPrompt, checkPrompt: currentContent.checkPrompt || generated.content.checkPrompt, independencePrompt: currentContent.independencePrompt || generated.content.independencePrompt, diagramType: currentContent.diagramType || engine.diagram || "" };
     const activeStage = DATA.stages.find(stage => stage.id === state.draft.stage) || DATA.stages[1];
     const nextStage = DATA.stages[DATA.stages.findIndex(stage => stage.id === state.draft.stage) + 1];
     const scaffold = { ...scaffoldFromDraft(), content: state.draft.content, diagram: { ...state.draft.diagram, type: state.draft.content.diagramType, labels: state.draft.content.diagramLabels } };
@@ -701,11 +925,13 @@
               <div class="form-field"><label for="content-instruction">Pupil instruction</label><textarea id="content-instruction" data-content-field="instruction" rows="2">${esc(state.draft.content.instruction)}</textarea><button class="inline-action" data-action="regenerate-section" data-section="instruction">Shorten access language</button></div>
               <div class="form-field"><label for="content-example">Example or partial example</label><textarea id="content-example" data-content-field="example" rows="3">${esc(state.draft.content.example)}</textarea><button class="inline-action" data-action="regenerate-section" data-section="example">Generate another local example frame</button></div>
               <div class="form-field"><label for="content-prompts">Prompts <small>— one per line</small></label><textarea id="content-prompts" data-content-field="prompts" data-list-mode="lines" rows="5">${esc((state.draft.content.prompts || []).join("\n"))}</textarea><button class="inline-action" data-action="regenerate-section" data-section="prompts">Replace stems with questions</button></div>
+              <div class="form-field protected-core-field"><label for="content-core-task">Protected pupil decision <small>— this remains while other support fades</small></label><textarea id="content-core-task" data-content-field="coreTask" rows="2">${esc(state.draft.content.coreTask || RESOURCE.coreTaskFor(scaffold))}</textarea><span class="field-hint">Edit this only if the engine's central decision needs more precise subject language.</span></div>
               <div class="form-field"><label for="content-vocabulary">Vocabulary <small>— comma separated</small></label><textarea id="content-vocabulary" data-content-field="vocabulary" data-list-mode="commas" rows="2">${esc((state.draft.content.vocabulary || []).join(", "))}</textarea></div>
             </div></details>
             <details><summary>Representation and access</summary><div class="designer-control-body">
               <div class="form-field"><label for="diagram-type">Local diagram</label><select id="diagram-type" data-content-field="diagramType">${diagramTypes.map(type => `<option value="${type}" ${type === state.draft.content.diagramType ? "selected" : ""}>${type ? titleCase(type) : "No diagram"}</option>`).join("")}</select></div>
               <div class="form-field"><label for="diagram-labels">Diagram labels <small>— comma separated</small></label><input id="diagram-labels" class="input" data-content-field="diagramLabels" data-list-mode="commas" value="${esc((state.draft.content.diagramLabels || []).join(", "))}"></div>
+              ${renderDiagramValueControls(state.draft.content.diagramType)}
               <div class="form-grid compact-fields"><div class="form-field"><label>Instruction language</label><select data-content-field="instructionMode">${DATA.build3.instructionModes.map(mode => `<option value="${mode}" ${mode === state.draft.content.instructionMode ? "selected" : ""}>${titleCase(mode)}</option>`).join("")}</select></div><div class="form-field"><label>Visual density</label><select data-content-field="density">${DATA.build3.densityModes.map(mode => `<option value="${mode}" ${mode === state.draft.content.density ? "selected" : ""}>${titleCase(mode)}</option>`).join("")}</select></div><div class="form-field"><label>Response space</label><select data-content-field="responseSpace"><option value="standard" ${state.draft.content.responseSpace === "standard" ? "selected" : ""}>Standard</option><option value="large" ${state.draft.content.responseSpace === "large" ? "selected" : ""}>Larger</option><option value="oral" ${state.draft.content.responseSpace === "oral" ? "selected" : ""}>Oral response</option></select></div><div class="form-field"><label>Classroom format</label><select data-draft-field="format">${DATA.printFormats.map(format => `<option value="${format.id}" ${format.id === state.draft.format ? "selected" : ""}>${esc(format.name)}</option>`).join("")}</select></div></div>
               <label class="check-row"><input type="checkbox" data-content-toggle="oralRehearsal" ${state.draft.content.oralRehearsal ? "checked" : ""}><span>Add oral rehearsal</span></label>
             </div></details>
@@ -738,7 +964,7 @@
             <button class="button" data-action="toggle-stage-compare"><span data-icon="eye"></span> Compare four stages</button>
             ${scaffold.id && state.library.some(item => item.id === scaffold.id) ? `<button class="button" data-action="record-fade" data-id="${esc(scaffold.id)}"><span data-icon="down"></span> Record move to ${esc(titleCase(state.draft.stage))}</button>` : ""}
             ${scaffold.id && state.library.some(item => item.id === scaffold.id) ? `<button class="button" data-action="record-use-reflection" data-id="${esc(scaffold.id)}"><span data-icon="brain"></span> Reflect after use</button>` : ""}
-            <div class="audit-panel audit-dashboard audit-judgement"><span class="audit-symbol">${flagged.length ? "!" : "✓"}</span><div><h3>${flagged.length ? `${flagged.length} review point${flagged.length === 1 ? "" : "s"}` : "Strong professional audit"}</h3><p>${flagged.length ? esc(flagged[0].reason) : "No obvious barrier, ownership, representation or fading issue was found."}</p></div><button class="text-link" data-action="show-quality-report">Inspect 11 judgements</button></div>
+            <div class="audit-panel audit-dashboard audit-judgement"><span class="audit-symbol">${flagged.length ? "!" : "✓"}</span><div><h3>${flagged.length ? `${flagged.length} review point${flagged.length === 1 ? "" : "s"}` : "Local audit complete"}</h3><p>${flagged.length ? esc(flagged[0].reason) : "No obvious barrier, ownership, representation or fading issue was found by local checks."}</p></div><button class="text-link" data-action="show-quality-report">Inspect ${audit.length} judgements</button></div>
           </aside>
         </div>`}
       </div>
@@ -750,8 +976,8 @@
     const aiStatus = AI.statusForResource(scaffold);
     return `${createHead(7, "Use, save or enhance", "The local resource is complete. Print it now, or invite external AI to contribute to one carefully bounded content slot.")}
       <div class="create-card-body output-workspace">
-        <section class="output-actions"><div class="output-action-card"><span>${icon("check")}</span><div><h3>Save the classroom resource</h3><p>Create a deliberate local checkpoint with all four growth stages.</p></div><button class="button button-primary" data-action="save-scaffold">Save to library</button></div><div class="output-action-card"><span>${icon("print")}</span><div><h3>Print or make a mixed pack</h3><p>Convert the structure into ${DATA.printFormats.length} classroom formats.</p></div><button class="button" data-action="open-print">Open Print Studio 3</button></div></section>
-        <section class="ai-editorial-invite"><div class="editorial-mark">${icon("editorial")}</div><div><span class="eyebrow">AI Companion 4 · optional and provider-neutral</span><h3>Invite one specialist contribution</h3><p>Scaffold Seeds keeps the objective, protected thinking, scaffold engine, fading pathway and print layout. External AI may contribute examples, passages, questions, critique or verification—never the whole resource.</p><div class="editorial-principle"><span>Scaffold Seeds designs</span><i></i><span>External AI contributes</span><i></i><span>You judge</span><i></i><span>Scaffold Seeds rebuilds</span></div></div><aside><span class="resource-status status-${esc(aiStatus)}">${esc(DATA.ai.statuses.find(status => status.id === aiStatus)?.name || "Local draft")}</span><button class="button button-primary" data-action="open-ai"><span data-icon="editorial"></span> Open AI Companion</button><small>Nothing is sent automatically.</small></aside></section>
+        <section class="output-actions"><div class="output-action-card"><span>${icon("check")}</span><div><h3>Save the classroom resource</h3><p>Create a deliberate local checkpoint with all four growth stages.</p></div><button class="button button-primary" data-action="save-scaffold">Save to library</button></div><div class="output-action-card"><span>${icon("print")}</span><div><h3>Print or make a mixed pack</h3><p>Convert the structure into ${DATA.printFormats.length} purpose-designed classroom formats.</p></div><button class="button" data-action="open-print">Open Print Studio</button></div></section>
+        <section class="ai-editorial-invite"><div class="editorial-mark">${icon("editorial")}</div><div><span class="eyebrow">AI Companion · optional and provider-neutral</span><h3>Invite one specialist contribution</h3><p>Scaffold Seeds keeps the objective, protected thinking, scaffold engine, fading pathway and print layout. External AI may contribute examples, passages, questions, critique or verification—never the whole resource.</p><div class="editorial-principle"><span>Scaffold Seeds designs</span><i></i><span>External AI contributes</span><i></i><span>You judge</span><i></i><span>Scaffold Seeds rebuilds</span></div></div><aside><span class="resource-status status-${esc(aiStatus)}">${esc(DATA.ai.statuses.find(status => status.id === aiStatus)?.name || "Local draft")}</span><button class="button button-primary" data-action="open-ai"><span data-icon="editorial"></span> Open AI Companion</button><small>Nothing is sent automatically.</small></aside></section>
       </div>${stepFooter({ nextLabel: "Start a new scaffold", nextAction: "start-again", extra: '<button class="button" data-action="edit-design">Return to designer</button>' })}`;
   }
 
@@ -792,11 +1018,13 @@
   function analyseBarrier() {
     const entry = currentEntry();
     const ranked = scoreBarrierCandidates().slice(0, 6);
-    state.draft.analysis = ranked.map(([id], index) => ({
+    state.draft.analysis = ranked.map(([id, score], index) => ({
       id,
+      score,
+      confidence: score >= 9 ? "Well-supported suggestion" : score >= 5 ? "Suggested" : "Possible",
       reason: index < 3 ? analysisReason(id, entry) : barrierById(id).hint
     }));
-    state.draft.selectedBarriers = ranked.slice(0, 3).map(([id]) => id);
+    state.draft.selectedBarriers = ranked.length ? [ranked[0][0]] : [];
     updateRecommendations();
     saveDraft();
   }
@@ -828,7 +1056,7 @@
     const chosen = state.draft.selectedBarriers;
     const subject = state.draft.subject;
     const intelligence = curriculumIntelligence();
-    const successfulPractice = state.library.filter(item => item.subject === subject && item.reflection?.worked === "yes");
+    const reflectedPractice = state.library.filter(item => item.subject === subject && (item.reflection || item.reflections?.length));
     state.draft.recommendations = DATA.engines
       .map(engine => {
         const barrierScore = engine.barriers.reduce((total, id) => total + (chosen.includes(id) ? 4 : 0), 0);
@@ -838,9 +1066,14 @@
           : state.draft.phase === "Before the lesson" && engine.id === "vocabulary-preteach" ? 3
           : state.draft.phase === "Review and reflection" && engine.id === "metacognition-planner" ? 3
           : state.draft.phase === "Independent practice" && ["metacognition-planner", "reasoning-ladder"].includes(engine.id) ? 2 : 0;
-        const practiceScore = successfulPractice.some(item => item.engineId === engine.id) ? 1 : 0;
+        const similarPractice = reflectedPractice.filter(item => item.engineId === engine.id && (!item.profileId || item.profileId === intelligence.profile.id) && (item.barriers || []).some(id => chosen.includes(id)));
+        const latestReflections = similarPractice.map(item => item.reflections?.[0] || item.reflection).filter(Boolean);
+        const practiceScore = latestReflections.some(item => item.worked === "yes") ? 3 : latestReflections.some(item => item.worked === "not-yet") ? -4 : 0;
+        const avoidText = String(engine.avoidWhen || "").toLowerCase();
+        const currentText = `${state.draft.situation} ${state.draft.customBarrier}`.toLowerCase();
+        const avoidScore = avoidText && avoidText.split(/\W+/).filter(word => word.length > 6).some(word => currentText.includes(word)) ? -3 : 0;
         const profileScore = (engine.prompts || []).some(prompt => `${state.draft.objective} ${state.draft.situation}`.toLowerCase().includes(prompt.toLowerCase().split(" ")[0])) ? 1 : 0;
-        return { id: engine.id, score: barrierScore + subjectScore + familyScore + phaseScore + practiceScore + profileScore };
+        return { id: engine.id, score: barrierScore + subjectScore + familyScore + phaseScore + practiceScore + avoidScore + profileScore };
       })
       .sort((a, b) => b.score - a.score)
       .slice(0, 3)
@@ -852,14 +1085,14 @@
     if (!state.draft.representation) state.draft.representation = intelligence.representations[0]?.name || "";
   }
 
-  function recommendationReason(engine) {
+  function similarReflection() {
     const intelligence = curriculumIntelligence();
-    const matchedBarrier = engine.barriers.map(barrierById).find(barrier => state.draft.selectedBarriers.includes(barrier?.id));
-    const subjectFit = engine.subjects.includes(state.draft.subject) || engine.subjects.includes("all");
-    if (engine.family === "representation" && intelligence.representations[0]) return `${intelligence.representations[0].name} is worth considering because it is useful ${intelligence.representations[0].use}.`;
-    if (matchedBarrier) return `Strong fit for ${matchedBarrier.name.toLowerCase()}: ${engine.bestFor}`;
-    if (subjectFit) return `${intelligence.profile.name} benefits from this ${familyById(engine.family).name.toLowerCase()} structure.`;
-    return engine.bestFor;
+    const candidates = state.library
+      .filter(item => item.subject === state.draft.subject && (!item.profileId || item.profileId === intelligence.profile.id))
+      .filter(item => (item.barriers || []).some(id => state.draft.selectedBarriers.includes(id)))
+      .flatMap(item => (item.reflections?.length ? item.reflections : item.reflection ? [item.reflection] : []).map(reflection => ({ item, reflection })))
+      .sort((a, b) => new Date(b.reflection.updatedAt || 0) - new Date(a.reflection.updatedAt || 0));
+    return candidates[0] || null;
   }
 
   function scaffoldFromDraft() {
@@ -870,6 +1103,8 @@
     const existing = state.draft.editingId ? state.library.find(item => item.id === state.draft.editingId) : null;
     return {
       id: existing?.id || uid(),
+      schemaVersion: 5,
+      revision: existing?.revision || 1,
       createdAt: existing?.createdAt || now,
       updatedAt: now,
       favourite: existing?.favourite || false,
@@ -908,12 +1143,9 @@
       growthStages: [...state.draft.growthStages],
       versions: existing?.versions || [],
       reflection: existing?.reflection || null,
+      reflections: existing?.reflections || (existing?.reflection ? [existing.reflection] : []),
       lastPrintedAt: existing?.lastPrintedAt || null
     };
-  }
-
-  function supportText(scaffold, seed, sprout, growth, independent) {
-    return { seed, sprout, growth, independent }[scaffold.stage] || sprout;
   }
 
   function blankLines(count = 3) {
@@ -927,8 +1159,9 @@
     const teacherCode = `SS-${String.fromCharCode(65 + Math.max(0, DATA.stages.findIndex(item => item.id === stage.id)))}`;
     const density = scaffold.content?.density || "calm";
     const responseSpace = scaffold.content?.responseSpace || "standard";
+    const owner = [state.settings.schoolLabel, state.settings.classLabel].filter(Boolean).join(" · ");
     return `<article class="paper density-${esc(density)} response-${esc(responseSpace)}" data-page="resource" data-stage="${esc(stage.id)}">
-      <div class="paper-brand">Scaffold Seeds · ${esc(engine.name)} <small>${teacherCode}</small></div>
+      <div class="paper-brand">Scaffold Seeds · ${esc(engine.name)}${owner ? ` · ${esc(owner)}` : ""} <small>${teacherCode}</small></div>
       <div class="resource-meta"><span>${esc(scaffold.year)}</span><span>${esc(subject.name)}</span><span>${esc(scaffold.topic)}</span></div>
       <h1>${esc(scaffold.title)}</h1>
       <p class="resource-objective"><strong>Learning focus:</strong> ${esc(scaffold.objective)}</p>
@@ -940,134 +1173,6 @@
   function renderResourceDocument(scaffold) {
     const body = RESOURCE.renderBody(scaffold);
     return resourceFrame(scaffold, body);
-  }
-
-  function resourceWords(scaffold, minimum = 4) {
-    const fallback = currentEntry({ ...state.draft, subject: scaffold.subject, year: scaffold.year, topic: scaffold.topic })?.vocabulary || ["key idea", "evidence", "explain", "check"];
-    const words = [...(scaffold.vocabulary || []), ...fallback];
-    return [...new Set(words)].slice(0, Math.max(minimum, 6));
-  }
-
-  function renderVocabularyBuilder(scaffold) {
-    const words = resourceWords(scaffold, 4).slice(0, 4);
-    return `<h2>Build words you can use</h2><div class="vocab-grid">${words.map(word => `<section class="vocab-box"><strong>${esc(word)}</strong><dl><dt>Meaning</dt><dd class="answer-content">${scaffold.stage === "seed" ? "Connect this word to the learning focus." : ""}</dd><dt>Example</dt><dd>${supportText(scaffold, "Use it in a complete idea.", "Sentence starter: This matters because…", "", "")}</dd><dt>Not this</dt><dd></dd></dl></section>`).join("")}</div><h2>Choose and connect</h2><p>${supportText(scaffold, "Use two of the words to explain the learning focus. Underline the connection between them.", "Choose two words. Explain how they connect.", "Which word carries the most important meaning here? Explain.", "Explain the idea precisely. Check that every subject word earns its place.")}</p>${blankLines(4)}`;
-  }
-
-  function renderVocabularyNetwork(scaffold) {
-    const words = resourceWords(scaffold, 4).slice(0, 4);
-    return `<h2>How does the language connect?</h2><div class="network"><div class="network-centre">${esc(scaffold.topic)}</div><div class="network-nodes">${words.map((word, index) => `<div class="network-node"><strong>${esc(word)}</strong><p>${supportText(scaffold, index === 0 ? "This connects because…" : "Link it to the centre." , "The connection is…", "Because…", "")}</p></div>`).join("")}</div></div><p><strong>Strongest connection:</strong> ${supportText(scaffold, "I think ___ and ___ belong together because…", "___ connects to ___ because…", "The most useful connection is…", "Review your network. Which connection deepens the concept?")}</p>${blankLines(2)}`;
-  }
-
-  function renderInferenceBridge(scaffold) {
-    return `<h2>Cross from evidence to inference</h2><div class="bridge">
-      <section class="bridge-step"><h3>1. Notice</h3><p>What exact word, action, detail or source feature can you point to?</p>${blankLines(5)}</section><div class="bridge-arrow">→</div>
-      <section class="bridge-step"><h3>2. Connect</h3><p>${supportText(scaffold, "What do you already know that makes this detail meaningful?", "This suggests… because I know…", "What makes this evidence relevant?", "")}</p>${blankLines(5)}</section><div class="bridge-arrow">→</div>
-      <section class="bridge-step"><h3>3. Infer</h3><p>${supportText(scaffold, "A careful inference is…", "Therefore, I infer…", "What conclusion is justified?", "State and justify your inference.")}</p>${blankLines(5)}</section></div>
-      <h2>Test the bridge</h2><p>Could the evidence support another inference? What makes yours stronger?</p>${blankLines(2)}`;
-  }
-
-  function renderParagraphPlanner(scaffold) {
-    const subjectStructures = {
-      english: ["Purpose", "Main idea", "Develop as a writer", "Shape the ending"],
-      history: ["Historical claim", "Period knowledge", "Evidence", "Reasoned connection"],
-      geography: ["Located claim", "Evidence at this scale", "Process or pattern", "Wider connection"],
-      science: ["Phenomenon", "Evidence", "Scientific idea", "Mechanism"],
-      computing: ["Goal", "Logical idea", "Trace or example", "Evaluation"]
-    };
-    const labels = subjectStructures[scaffold.subject] || ["Claim", "Relevant knowledge", "Evidence", "Reasoned link"];
-    const prompts = scaffold.stage === "seed"
-      ? ["What must this paragraph help the reader understand?", "Write the central idea in one precise sentence.", "Add selected evidence, detail or an example. Explain why it matters.", "Return to the purpose without simply repeating."]
-      : scaffold.stage === "sprout" ? ["My purpose is…", "The central idea is…", "This is shown by… This matters because…", "Therefore…"]
-      : scaffold.stage === "growth" ? ["Purpose", "Idea", "Develop", "Connect"]
-      : ["Before writing: can you state the purpose, sequence and ending aloud?"];
-    return `<h2>Plan the thinking—not every sentence</h2><div class="paragraph-stack">${labels.map((label, index) => `<section class="paragraph-step"><strong>${esc(label)}</strong><div><small>${esc(prompts[Math.min(index, prompts.length - 1)] || "")}</small></div></section>`).join("")}</div><h2>Independence check</h2><p>Which box could you cover now and still write successfully? That is the next part to fade.</p>${blankLines(2)}`;
-  }
-
-  function renderSentenceLadder(scaffold) {
-    const core = scaffold.vocabulary?.[0] || scaffold.topic;
-    const rungs = [
-      ["Core idea", `${core}…`],
-      ["Add precision", supportText(scaffold, "Who or what? Choose the exact noun and verb.", "Choose a more precise noun or verb.", "Make one word more precise.", "")],
-      ["Add a relationship", supportText(scaffold, "Show when, where, how or why.", "Add a clause that deepens meaning.", "Make the relationship clear.", "")],
-      ["Read as a writer", supportText(scaffold, "Keep the addition only if it serves your purpose.", "Remove any detail that does not earn its place.", "Check rhythm, clarity and purpose.", "Review independently.")]
-    ];
-    return `<h2>Grow one deliberate choice at a time</h2><div class="ladder">${rungs.map(([label, prompt]) => `<section class="ladder-rung"><strong>${esc(label)}</strong><span>${esc(prompt)}</span>${blankLines(1)}</section>`).join("")}</div><h2>Final sentence</h2><div class="answer-space"></div>`;
-  }
-
-  function renderWorkedExample(scaffold) {
-    const subjectSteps = {
-      mathematics: ["Identify the mathematical structure", "Choose a representation and explain why it fits", "Carry out the strategy while linking each move to the structure", "Check with estimation, inverse or a different representation"],
-      computing: ["Define the intended outcome", "Trace the planned logic and changing state", "Implement or correct one deliberate step", "Test with a case chosen to reveal an error"],
-      english: ["Notice the writer or reader decision", "Explain what the choice achieves", "Apply the same principle in a new context", "Reread and evaluate the effect"]
-    };
-    const steps = subjectSteps[scaffold.subject] || ["Notice what the task is asking", "Choose the first useful representation or action", "Carry out the method and explain the decision", "Check the result against the original task"];
-    const hideFrom = { seed: 4, sprout: 2, growth: 1, independent: 0 }[scaffold.stage];
-    return `<h2>Study the decisions, then complete the thinking</h2><div class="worked-example"><section class="worked-column"><h3>Worked thinking</h3>${steps.map((step, index) => `<div class="worked-step"><span>${index + 1}</span><span class="${index >= hideFrom ? "" : "answer-content"}">${index < hideFrom ? esc(step) : "What would you do here—and why?"}</span></div>`).join("")}</section><section class="worked-column"><h3>Your parallel example</h3>${steps.map((step, index) => `<div class="worked-step"><span>${index + 1}</span><span>${supportText(scaffold, index === 0 ? "Identify the task." : "Follow the same kind of decision—not the same answer.", index < 2 ? "Use the model, then make your own choice." : "Explain your choice.", index === 0 ? "What matters first?" : "", "Plan, solve and check independently.")}</span></div>`).join("")}</section></div><h2>What should fade next?</h2><p>Circle the modelled step you no longer need to see.</p>`;
-  }
-
-  function renderRepresentationSelector(scaffold) {
-    const intelligence = curriculumIntelligence(scaffold);
-    const preferred = scaffold.representation ? intelligence.representations.find(item => item.name === scaffold.representation) : null;
-    const representations = [...(preferred ? [preferred] : []), ...intelligence.representations.filter(item => item !== preferred)].slice(0, 3);
-    while (representations.length < 3) representations.push({ name: ["Words and notation", "A second model", "No external model"][representations.length], use: "when it exposes the intended relationship", avoid: "when it adds visual load without insight" });
-    return `<h2>Which representation reveals the subject relationship?</h2><div class="representation-grid">${representations.map((item, index) => `<section class="representation-card ${index === 0 && preferred ? "is-recommended" : ""}"><h3>${index + 1}. ${esc(item.name)}</h3><small>${esc(item.use)}</small><div class="representation-space"></div><p><strong>It makes visible…</strong></p><p><strong>It may conceal…</strong></p></section>`).join("")}</div><h2>Make a reasoned choice</h2><p>${supportText(scaffold, "The most useful representation is ___ because it makes ___ visible. I rejected ___ because…", "I would choose ___ because…", "Which representation exposes the important relationship?", "Choose, use and evaluate a representation independently.")}</p>${blankLines(3)}`;
-  }
-
-  function renderReasoningLadder(scaffold) {
-    const subjectSteps = {
-      english: [["Notice", "Which exact word, sentence or pattern matters?"], ["Connect", "What does the reader know that makes it meaningful?"], ["Interpret", "What idea or impression does that support?"], ["Justify", "Why is this evidence strong enough?"], ["Test", "What other reading is possible—and why is yours stronger?"]],
-      mathematics: [["Notice structure", "What stays the same and what changes?"], ["Represent", "Which model exposes the relationship?"], ["Generalise", "What mathematical statement may be true?"], ["Justify", "Why must it work, not only in this example?"], ["Test", "Use a boundary case or counterexample."]],
-      science: [["Observe", "What exactly was seen or measured?"], ["Select evidence", "Which result is relevant to the question?"], ["Use science", "Which scientific idea or model applies?"], ["Explain mechanism", "How does the idea account for the evidence?"], ["Limit", "What can the evidence not yet show?"]],
-      history: [["Claim", "What historical claim are you considering?"], ["Use knowledge", "Which period knowledge makes the evidence meaningful?"], ["Select evidence", "What can this source or example reveal?"], ["Reason", "How does it support the claim?"], ["Test", "What other interpretation or factor must be considered?"]],
-      geography: [["Locate", "Where is the pattern or process?"], ["Describe pattern", "What is distributed, connected or changing?"], ["Explain process", "Which human or physical process accounts for it?"], ["Connect", "How do place and scale shape the explanation?"], ["Scale test", "Would this claim still hold at another scale?"]],
-      computing: [["Goal", "What should the system or algorithm do?"], ["Trace", "What instruction runs next?"], ["State", "What changes, and what remains stored?"], ["Explain", "Why does that produce the output?"], ["Test", "Which input is most likely to reveal a flaw?"]]
-    };
-    const steps = subjectSteps[scaffold.subject] || [["Notice", "What do you see, know or calculate?"], ["Connect", "Which detail, rule or relationship matters?"], ["Explain", "How does that connection support your idea?"], ["Justify", "Why should someone accept this conclusion?"], ["Test", "What might challenge it?"]];
-    const visible = { seed: 5, sprout: 4, growth: 2, independent: 1 }[scaffold.stage];
-    return `<h2>Move from noticing to a defensible conclusion</h2><div class="reasoning-steps">${steps.map(([label, prompt], index) => `<section class="reasoning-step"><div><strong>${esc(label)}</strong><span>${index < visible ? esc(prompt) : "Use your own next reasoning move."}</span>${blankLines(index < 2 ? 1 : 2)}</div></section>`).join("")}</div>`;
-  }
-
-  function renderObservationRecorder(scaffold) {
-    const cells = scaffold.subject === "geography"
-      ? [["Located observation", "Record what is present and exactly where."], ["Spatial pattern", "Describe distribution, connection or change without explaining yet."], ["Fieldwork limitation", "What might time, site or sampling have missed?"], ["Geographical meaning", "Connect the pattern to a human or physical process."]]
-      : [["I see / measure", "Record only what can be observed or measured."], ["I notice a change", "Compare carefully with the start or another case."], ["I wonder", "Ask a question that could guide further observation."], ["I think this means", "Interpret the pattern. Link the claim to evidence."]];
-    return `<h2>Observe before you explain</h2><div class="observation-grid">${cells.map(([title, prompt], index) => `<section class="observation-cell"><h3>${esc(title)}</h3><p>${scaffold.stage === "independent" && index < 3 ? "" : esc(prompt)}</p>${blankLines(4)}</section>`).join("")}</div><h2>Keep evidence and interpretation distinct</h2><p>Underline one observation. Draw an arrow to the idea it supports.</p>`;
-  }
-
-  function renderEvidenceBuilder(scaffold) {
-    const labels = scaffold.subject === "science" ? ["Scientific claim", "Observation or result", "Scientific mechanism"]
-      : scaffold.subject === "history" ? ["Historical claim", "Source plus period knowledge", "Historical inference"]
-      : scaffold.subject === "geography" ? ["Located claim", "Map, fieldwork or case evidence", "Process and scale"]
-      : scaffold.subject === "english" ? ["Interpretation", "Precise textual evidence", "Reader's reasoning"] : ["Claim", "Evidence", "Reasoning"];
-    return `<h2>Build a subject chain that holds</h2><div class="evidence-chain"><section class="chain-card"><h3>${esc(labels[0])}</h3><p>${supportText(scaffold, "My answer or interpretation is…", "I think…", "State a precise claim.", "")}</p>${blankLines(5)}</section><div class="chain-link">→</div><section class="chain-card"><h3>${esc(labels[1])}</h3><p>${supportText(scaffold, "The exact detail, result or source feature is…", "This is shown by…", "Choose the strongest evidence.", "")}</p>${blankLines(5)}</section><div class="chain-link">→</div><section class="chain-card"><h3>${esc(labels[2])}</h3><p>${supportText(scaffold, "This evidence supports the claim because…", "This matters because…", "Make the connection explicit.", "")}</p>${blankLines(5)}</section></div><h2>Stress-test the chain</h2><p>Where is the weakest link? Strengthen it without adding irrelevant information.</p>${blankLines(2)}`;
-  }
-
-  function renderChronologyBuilder(scaffold) {
-    return `<h2>Sequence, duration and change</h2><div class="timeline">${[1,2,3,4].map((number, index) => `<section class="timeline-event"><strong>${number}. ${supportText(scaffold, ["Beginning", "Development", "Turning point", "Outcome"][index], ["Before", "Then", "Later", "By the end"][index], "Event or period", "")}</strong><p>When?</p>${blankLines(2)}<p>What changed—or continued?</p>${blankLines(3)}</section>`).join("")}</div><h2>Read across the timeline</h2><p>${supportText(scaffold, "The most significant change was ___ because… One continuity was…", "What changed? What stayed?", "Explain one relationship across time.", "Construct an account using secure chronology.")}</p>${blankLines(2)}`;
-  }
-
-  function renderComparisonOrganiser(scaffold) {
-    return `<h2>Compare through a shared lens</h2><p><strong>Comparison criterion:</strong> ${supportText(scaffold, "Choose one: structure · purpose · cause · impact · process", "We are comparing…", "", "Set a useful criterion.")}</p><div class="compare-grid"><section class="compare-side"><h3>Case A</h3><p>Relevant feature</p>${blankLines(5)}<p>Evidence or example</p>${blankLines(3)}</section><section class="compare-side"><h3>Case B</h3><p>The same relevant feature</p>${blankLines(5)}<p>Evidence or example</p>${blankLines(3)}</section><section class="compare-same"><h3>Meaningful comparison</h3><p>${supportText(scaffold, "Both ___, but ___. This matters because…", "Both… whereas…", "What pattern or contrast matters?", "Form and justify a comparison.")}</p>${blankLines(2)}</section></div>`;
-  }
-
-  function renderAlgorithmPlanner(scaffold) {
-    const count = scaffold.stage === "independent" ? 4 : 6;
-    return `<h2>Plan, test, improve</h2><div class="algorithm-flow">${Array.from({ length: count }, (_, index) => `<section class="algorithm-step"><span>${index + 1}</span><span>${supportText(scaffold, index === 0 ? "State the first precise instruction." : "What must happen next?", index === 0 ? "Start with…" : "Then…", "Instruction", "")}</span><span class="algorithm-check">Test: what should happen?</span></section>`).join("")}</div><h2>Debug deliberately</h2><p>Expected outcome: ____________________ &nbsp; Actual outcome: ____________________</p><p>${supportText(scaffold, "Change one step. Test again. Record what the change tells you.", "Which single step will you change?", "Locate, change, test.", "Debug and explain your revision.")}</p>${blankLines(2)}`;
-  }
-
-  function renderMetacognitionPlanner(scaffold) {
-    const columns = [
-      ["Plan", ["What is the goal?", "What do I already know?", "Which approach might fit?"]],
-      ["Monitor", ["What is working?", "Where am I stuck?", "What could I change?"]],
-      ["Evaluate", ["Did I meet the goal?", "What evidence shows this?", "What will I reuse next time?"]]
-    ];
-    const visible = { seed: 3, sprout: 2, growth: 1, independent: 0 }[scaffold.stage];
-    return `<h2>Take charge of the process</h2><div class="metacognition">${columns.map(([title, prompts]) => `<section class="meta-column"><h3>${esc(title)}</h3>${prompts.map((prompt, index) => `<p>${index < visible ? esc(prompt) : ""}</p>${blankLines(2)}`).join("")}</section>`).join("")}</div><h2>Choose one self-prompt to keep</h2><p>Write the question that will help you most when the planner is removed.</p>${blankLines(2)}`;
-  }
-
-  function renderVocabularyPreteach(scaffold) {
-    const words = resourceWords(scaffold, 4).slice(0, 4);
-    return `<h2>Prepare a few words for high-leverage use</h2><div class="preteach">${words.map(word => `<section class="preteach-row"><div class="preteach-word">${esc(word)}</div><div class="preteach-box"><strong>See & say</strong><br>Pronunciation, word parts, visual cue</div><div class="preteach-box"><strong>Meaning</strong><br>Child-friendly meaning and useful contrast</div><div class="preteach-box"><strong>Use</strong><br>Oral rehearsal in today’s learning</div></section>`).join("")}</div><h2>Teacher release check</h2><p>Do pupils now recognise, understand and use each word? Remove the pre-teach card once the language works inside the lesson.</p>`;
   }
 
   function qualityAudit(scaffold) {
@@ -1088,7 +1193,8 @@
       .filter(item => filters.source === "all" || (filters.source === "attached" ? (item.sources || []).length > 0 : (item.sources || []).length === 0))
       .filter(item => !filters.favourite || item.favourite)
       .sort((a, b) => filters.sort === "printed" ? new Date(b.lastPrintedAt || 0) - new Date(a.lastPrintedAt || 0) : filters.sort === "title" ? a.title.localeCompare(b.title) : new Date(b.updatedAt) - new Date(a.updatedAt));
-    const cards = filtered.map(item => `
+    const visibleItems = filtered.slice(0, state.libraryVisible);
+    const cards = visibleItems.map(item => `
       <article class="library-card">
         <div class="library-thumb"><div class="mini-paper"></div><label class="library-select"><input type="checkbox" data-library-select="${esc(item.id)}" ${state.librarySelection.includes(item.id) ? "checked" : ""}><span>Select</span></label><span class="library-ai-status resource-status status-${esc(AI.statusForResource(item))}">${esc(aiStatusName(item))}</span><button class="favourite-button ${item.favourite ? "is-active" : ""}" data-action="toggle-favourite" data-id="${esc(item.id)}" aria-label="${item.favourite ? "Remove from" : "Add to"} favourites" aria-pressed="${item.favourite}">${icon("heart")}</button></div>
         <div class="library-card-body"><div class="library-card-title"><h3 title="${esc(item.title)}">${esc(item.title)}</h3><button class="text-link" data-action="rename-scaffold" data-id="${esc(item.id)}">Rename</button></div><p>${esc(item.year)} · ${esc(subjectById(item.subject).name)} · ${esc(engineById(item.engineId).name)}</p>
@@ -1098,7 +1204,7 @@
         </div>
       </article>`).join("");
     return `
-      <div class="page-heading"><div><span class="eyebrow">Saved on this device · Build 4</span><h2>${filters.archived ? "Archived scaffolds" : "Your scaffold library"}</h2><p>Local and AI-assisted resources share one calm library. Status, provenance and unresolved review remain visible without cluttering pupil pages.</p></div><button class="button button-primary" data-action="new-scaffold"><span data-icon="plus"></span> New scaffold</button></div>
+      <div class="page-heading"><div><span class="eyebrow">Saved on this device</span><h2>${filters.archived ? "Archived scaffolds" : "Your scaffold library"}</h2><p>Local and AI-assisted resources share one calm library. Status, provenance and unresolved review remain visible without cluttering pupil pages.</p></div><button class="button button-primary" data-action="new-scaffold"><span data-icon="plus"></span> New scaffold</button></div>
       <div class="library-view-tabs"><button class="${!filters.archived ? "is-active" : ""}" data-action="library-view" data-id="active">Current <span>${state.library.filter(item => !item.archived).length}</span></button><button class="${filters.archived ? "is-active" : ""}" data-action="library-view" data-id="archived">Archive <span>${state.library.filter(item => item.archived).length}</span></button></div>
       ${state.librarySelection.length ? `<div class="library-batch"><strong>${state.librarySelection.length} selected</strong><button class="button button-compact" data-action="batch-export">Export</button><button class="button button-compact" data-action="batch-reviewed">Mark reviewed</button><button class="button button-compact" data-action="batch-archive">${filters.archived ? "Restore" : "Archive"}</button><button class="text-link" data-action="batch-clear">Clear selection</button><small>Resources with unresolved high-risk findings cannot be bulk approved.</small></div>` : ""}
       <div class="toolbar library-toolbar">
@@ -1113,7 +1219,7 @@
         <select data-library-filter="sort" aria-label="Sort library"><option value="edited" ${filters.sort === "edited" ? "selected" : ""}>Recently edited</option><option value="printed" ${filters.sort === "printed" ? "selected" : ""}>Recently printed</option><option value="title" ${filters.sort === "title" ? "selected" : ""}>Title</option></select>
         <button class="button ${filters.favourite ? "button-soft" : ""}" data-action="filter-favourites" aria-pressed="${filters.favourite}">${icon("heart")} Favourites</button>
       </div>
-      ${state.library.length === 0 ? `<div class="empty-help"><span class="empty-mark">${icon("library")}</span><h4>A library built from real needs</h4><p>Your saved scaffolds will show objective, barrier, engine, fading stages, formats and intentional versions.</p><button class="button button-primary" data-action="new-scaffold">Create a scaffold</button></div>` : filtered.length ? `<div class="library-grid">${cards}</div>` : `<div class="empty-help"><span class="empty-mark">${icon("search")}</span><h4>No scaffolds match this view</h4><p>Clear one filter to widen the view. Nothing has been removed.</p><button class="button" data-action="clear-library-filters">Clear filters</button></div>`}`;
+      ${state.library.length === 0 ? `<div class="empty-help"><span class="empty-mark">${icon("library")}</span><h4>A library built from real needs</h4><p>Your saved scaffolds will show objective, barrier, engine, fading stages, formats and intentional versions.</p><button class="button button-primary" data-action="new-scaffold">Create a scaffold</button></div>` : filtered.length ? `<p class="library-count" aria-live="polite">Showing ${visibleItems.length} of ${filtered.length} matching resources</p><div class="library-grid">${cards}</div>${filtered.length > visibleItems.length ? `<button class="button library-more" data-action="library-more">Show 60 more</button>` : ""}` : `<div class="empty-help"><span class="empty-mark">${icon("search")}</span><h4>No scaffolds match this view</h4><p>Clear one filter to widen the view. Nothing has been removed.</p><button class="button" data-action="clear-library-filters">Clear filters</button></div>`}`;
   }
 
   function renderKnowledge() {
@@ -1123,7 +1229,7 @@
     const profile = brain.profiles.find(item => item.id === state.knowledgeProfile) || brain.profiles[0];
     const lensLabels = { ideas: "Subject architecture", progression: "Small steps", misconceptions: "Misconceptions", toolkit: "Teacher toolkit" };
     return `
-      <div class="page-heading"><div><span class="eyebrow">Built for England · Build 3 curriculum engineering</span><h2>Knowledge Studio</h2><p>Browse the subject thinking used inside every recommendation: big ideas, progression, misconceptions, representations and teacher decisions.</p></div></div>
+      <div class="page-heading"><div><span class="eyebrow">Curriculum knowledge for primary education in England</span><h2>Knowledge Studio</h2><p>Browse the subject thinking used inside every recommendation: big ideas, progression, misconceptions, representations and teacher decisions.</p></div></div>
       <div class="knowledge-layout">
         <div class="knowledge-nav"><div class="subject-tabs" role="tablist" aria-label="Subjects">${DATA.subjects.map(item => `<button class="subject-tab ${item.id === subject.id ? "is-active" : ""}" style="--subject-colour:${item.colour}" role="tab" aria-selected="${item.id === subject.id}" data-action="knowledge-subject" data-id="${item.id}">${esc(item.name)}</button>`).join("")}</div><div class="profile-list"><span class="eyebrow">Subject lenses</span>${brain.profiles.map(item => `<button class="profile-button ${item.id === profile.id ? "is-active" : ""}" data-action="knowledge-profile" data-id="${item.id}"><span></span>${esc(item.name)}</button>`).join("")}</div></div>
         <section class="knowledge-content" style="--subject-colour:${subject.colour}">
@@ -1169,7 +1275,7 @@
     if (force || !state.aiWorkspace || state.aiWorkspace.resourceId !== scaffold.id) {
       const saved = readStore(`${STORAGE.aiWorkspace}.${scaffold.id}`, null)
         || (!force && state.aiWorkspace?.resourceId === scaffold.id ? state.aiWorkspace : null);
-      state.aiWorkspace = AI.createWorkspace(scaffold, saved);
+      state.aiWorkspace = safeAIWorkspace(scaffold, saved);
       state.aiTaskFamily = AI.taskById(state.aiWorkspace.options.taskId).family;
       saveAIWorkspace();
     }
@@ -1184,7 +1290,7 @@
   function updateAIResourceStatus(status, extras = {}) {
     const scaffold = activeForAI();
     if (!scaffold) return;
-    scaffold.ai = { ...(scaffold.ai || {}), schemaVersion: 4, rounds: scaffold.ai?.rounds || [], provenance: scaffold.ai?.provenance || [], status, ...extras };
+    scaffold.ai = { ...(scaffold.ai || {}), schemaVersion: 5, rounds: scaffold.ai?.rounds || [], provenance: scaffold.ai?.provenance || [], status, ...extras };
     const index = state.library.findIndex(item => item.id === scaffold.id);
     if (index >= 0) state.library[index] = scaffold;
     state.activeScaffold = scaffold;
@@ -1198,13 +1304,13 @@
     }
     const workspace = ensureAIWorkspace(scaffold);
     const phases = [
-      ["task", "1", "Request"], ["prompt", "2", "Prepare"], ["import", "3", "Return"], ["review", "4", "Review"], ["verify", "5", "Verify & rebuild"]
+      ["task", "1", "Choose task"], ["prompt", "2", "Prepare AI prompt"], ["import", "3", "Import AI response"], ["review", "4", "Review imported content"], ["verify", "5", "Verify & rebuild"]
     ];
     const phaseIndex = phases.findIndex(([id]) => id === workspace.phase);
     const content = { task: renderAITaskPhase, prompt: renderAIPromptPhase, import: renderAIImportPhase, review: renderAIReviewPhase, verify: renderAIVerifyPhase }[workspace.phase](scaffold, workspace);
     const stage = stageById(scaffold.stage);
     const engine = engineById(scaffold.engineId);
-    return `<div class="page-heading ai-page-heading"><div><span class="eyebrow">AI Companion 4 · careful editorial exchange</span><h2>External range. Local control.</h2><p>Invite one narrow contribution, bring it back as inert content, inspect every change, then rebuild it inside Scaffold Seeds.</p></div><div class="local-only-badge">${icon("shield")}<span><strong>Nothing sent automatically</strong><small>No API, account or backend</small></span></div></div>
+    return `<div class="page-heading ai-page-heading"><div><span class="eyebrow">AI Companion · careful editorial exchange</span><h2>External range. Local control.</h2><p>Invite one narrow contribution, bring it back as inert content, inspect every change, then rebuild it inside Scaffold Seeds. Teacher judgement remains central.</p></div><div class="local-only-badge">${icon("shield")}<span><strong>Nothing sent automatically</strong><small>No API, account or backend</small></span></div></div>
       <div class="ai-progress" role="navigation" aria-label="AI enhancement workflow">${phases.map(([id, number, label], index) => `<button class="${workspace.phase === id ? "is-active" : index < phaseIndex ? "is-complete" : ""}" data-action="ai-phase" data-id="${id}" ${index > 0 && !workspace.prompt ? "disabled" : index > 2 && !workspace.parsed ? "disabled" : ""}><span>${index < phaseIndex ? "✓" : number}</span><strong>${label}</strong></button>`).join("")}</div>
       <div class="ai-studio-layout">
         <aside class="ai-context-rail">
@@ -1327,7 +1433,7 @@
   function renderAIImportPhase(scaffold, workspace) {
     const parsed = workspace.parsed;
     return `<div class="ai-phase-head"><span class="phase-number">03</span><div><span class="eyebrow">Return safely</span><h3>Paste the complete response</h3><p>The raw response is preserved. Scripts, styles and markup are never executed.</p></div></div>
-      <section class="import-desk"><div class="import-desk-head"><div><h4>External AI response</h4><p>Plain text, markdown, tables, lists and simple JSON are supported.</p></div>${workspace.rawPreservedAt ? `<span class="raw-preserved">Raw response preserved ${relativeDate(workspace.rawPreservedAt)}</span>` : ""}</div><textarea id="ai-raw-import" data-ai-raw-import rows="18" placeholder="Paste the full response here. Introductory commentary and imperfect headings are safe to include…">${esc(workspace.rawImport || "")}</textarea><div class="import-actions"><button class="button button-primary" data-action="ai-structure-import">Try automatic structuring</button><button class="button" data-action="ai-import-plain">Use as plain text</button><button class="button" data-action="ai-manual-import">Split manually</button><button class="button button-ghost" data-action="ai-clear-import">Start over</button></div></section>
+      <section class="import-desk"><div class="import-desk-head"><div><h4>External AI response</h4><p>Plain text, markdown, tables, lists and simple JSON are supported.</p></div>${workspace.rawPreservedAt ? `<span class="raw-preserved">Raw response preserved ${relativeDate(workspace.rawPreservedAt)}</span>` : ""}</div><textarea id="ai-raw-import" data-ai-raw-import rows="18" maxlength="65000" placeholder="Paste the full response here. Introductory commentary and imperfect headings are safe to include…">${esc(workspace.rawImport || "")}</textarea><div class="import-actions"><button class="button button-primary" data-action="ai-structure-import">Try automatic structuring</button><button class="button" data-action="ai-import-plain">Use as plain text</button><button class="button" data-action="ai-manual-import">Split manually</button><button class="button button-ghost" data-action="ai-clear-import">Start over</button>${workspace.importRecovery ? '<button class="text-link" data-action="ai-restore-import">Restore previous import</button>' : ""}</div></section>
       ${parsed ? `<section class="import-result"><div class="section-heading"><div><span class="eyebrow">Import recovery</span><h4>${esc(parsed.format)} organised into ${parsed.sections.length} section${parsed.sections.length === 1 ? "" : "s"}</h4><p>${parsed.missing.length ? `${parsed.missing.length} expected section${parsed.missing.length === 1 ? " is" : "s are"} still missing.` : "All expected content types were detected."}</p></div><span class="local-check-label">Raw response retained</span></div><div class="import-summary-grid">${parsed.sections.map(section => `<div class="import-summary-card ${section.unexpected ? "is-unexpected" : ""}"><span>${section.expected ? "Expected" : section.unexpected ? "Unexpected" : "Optional"}</span><strong>${esc(section.label)}</strong><small>${section.items.length} item${section.items.length === 1 ? "" : "s"}</small></div>`).join("")}</div>${parsed.warnings.length ? `<div class="import-warnings">${parsed.warnings.map(warning => `<p><strong>${esc(warning.title)}</strong> ${esc(warning.message)}</p>`).join("")}</div>` : ""}</section>` : ""}
       <div class="ai-phase-footer"><button class="button" data-action="ai-phase" data-id="prompt">← Return to prompt</button><button class="button button-primary" data-action="ai-phase" data-id="review" ${parsed ? "" : "disabled"}>Review sections ${icon("arrow")}</button></div>`;
   }
@@ -1338,7 +1444,7 @@
 
   function renderAIReviewPhase(scaffold, workspace) {
     const parsed = workspace.parsed;
-    if (!parsed) return `<div class="empty-help"><h4>No imported response yet</h4><p>Paste and structure a response before reviewing changes.</p><button class="button" data-action="ai-phase" data-id="import">Import a response</button></div>`;
+    if (!parsed) return `<div class="empty-help"><h4>No imported response yet</h4><p>Paste and structure a response before reviewing changes.</p><button class="button" data-action="ai-phase" data-id="import">Import AI response</button></div>`;
     const total = parsed.sections.reduce((sum, section) => sum + section.items.length, 0);
     const decided = parsed.sections.reduce((sum, section) => sum + section.items.filter(item => item.status !== "pending").length, 0);
     const compareId = workspace.comparisonSection || parsed.sections.find(section => section.id !== "other")?.id || "";
@@ -1550,10 +1656,15 @@
     const fallback = () => {
       const area = document.createElement("textarea");
       area.value = text; area.setAttribute("readonly", ""); area.style.position = "fixed"; area.style.opacity = "0";
-      document.body.appendChild(area); area.select(); document.execCommand?.("copy"); area.remove(); toast(confirmation);
+      document.body.appendChild(area); area.select();
+      let copied = false;
+      try { copied = Boolean(document.execCommand?.("copy")); } catch (error) { copied = false; }
+      area.remove();
+      toast(copied ? confirmation : "Copy was blocked. Select the text on screen and copy it manually.");
+      return copied;
     };
-    if (navigator.clipboard?.writeText) navigator.clipboard.writeText(text).then(() => toast(confirmation), fallback);
-    else fallback();
+    if (navigator.clipboard?.writeText) return navigator.clipboard.writeText(text).then(() => { toast(confirmation); return true; }, fallback);
+    return Promise.resolve(fallback());
   }
 
   function activeForPrint() {
@@ -1561,7 +1672,8 @@
   }
 
   function paperClasses() {
-    return [state.print.paper === "a5" ? "a5" : "", state.print.orientation === "landscape" ? "landscape" : "", `ink-${state.print.colour}`, state.print.colour === "greyscale" ? "greyscale" : "", state.print.photocopy ? "photocopy" : "", state.print.largePrint ? "large-print" : "", state.print.cropMarks ? "crop-marks" : "", state.print.cutLines ? "show-cut-lines" : "hide-cut-lines", state.settings.pageNumbers ? "page-numbers" : "", state.print.answers ? "" : "hide-answers"].filter(Boolean).join(" ");
+    const mode = normalisePrintMode(state.print.colour);
+    return [state.print.paper === "a5" ? "a5" : "", state.print.orientation === "landscape" ? "landscape" : "", `ink-${mode}`, state.print.largePrint ? "large-print" : "", state.print.cropMarks ? "crop-marks" : "", state.print.cutLines ? "show-cut-lines" : "hide-cut-lines", state.settings.pageNumbers ? "page-numbers" : ""].filter(Boolean).join(" ");
   }
 
   function applyPaperOptions(html) {
@@ -1590,7 +1702,8 @@
   function formatPage(scaffold, format, body, className = "") {
     const subject = subjectById(scaffold.subject);
     const stageIndex = Math.max(0, DATA.stages.findIndex(item => item.id === scaffold.stage));
-    return `<article class="paper format-page format-${format.id} ${className}" data-page="resource" data-stage="${esc(scaffold.stage)}"><div class="paper-brand">Scaffold Seeds · ${esc(format.name)} <small>SS-${String.fromCharCode(65 + stageIndex)}</small></div><div class="resource-meta"><span>${esc(scaffold.year)}</span><span>${esc(subject.name)}</span></div>${body}<footer class="resource-footer"><span>${esc(scaffold.topic)}</span><span>Designed to fade</span></footer></article>`;
+    const owner = [state.settings.schoolLabel, state.settings.classLabel].filter(Boolean).join(" · ");
+    return `<article class="paper format-page format-${format.id} ${className}" data-page="resource" data-stage="${esc(scaffold.stage)}"><div class="paper-brand">Scaffold Seeds · ${esc(format.name)}${owner ? ` · ${esc(owner)}` : ""} <small>SS-${String.fromCharCode(65 + stageIndex)}</small></div><div class="resource-meta"><span>${esc(scaffold.year)}</span><span>${esc(subject.name)}</span></div>${body}<footer class="resource-footer"><span>${esc(scaffold.topic)}</span><span>Designed to fade</span></footer></article>`;
   }
 
   function renderCompactWorkpage(scaffold) {
@@ -1627,8 +1740,15 @@
       return formatPage(scaffold, format, `${title}<div class="print-card-grid table-cards">${tablePrompts.map((item, index) => `<section><span class="card-seed">Card ${index + 1}</span><h2>${esc(item)}</h2><p>${index % 2 ? "Ask for evidence, then listen without rescuing." : "Pause. Each person offers one precise idea."}</p><div class="wipe-space small"></div></section>`).join("")}</div>`);
     }
     if (format.id === "mini-card") {
-      const miniPrompts = [...cards, ...prompts.questions, "What can I now do without this card?"].slice(0, 6);
+      const count = [4, 6, 8].includes(Number(state.print.arrangement)) ? Number(state.print.arrangement) : 6;
+      const miniPrompts = [...cards, ...prompts.questions, "What can I now do without this card?", ...cards].slice(0, count);
       return formatPage(scaffold, format, `${title}<div class="print-card-grid mini-cards">${miniPrompts.map((item, index) => `<section><span>${String(index + 1).padStart(2, "0")}</span><strong>${esc(item)}</strong><small>${esc(prompts.vocabulary[index % Math.max(prompts.vocabulary.length, 1)] || scaffold.topic)}</small></section>`).join("")}</div>`);
+    }
+    if (format.id === "vocabulary-card") {
+      const vocabulary = prompts.vocabulary.length ? prompts.vocabulary : [scaffold.topic];
+      const count = [4, 6, 8].includes(Number(state.print.arrangement)) ? Number(state.print.arrangement) : 6;
+      const cardsToPrint = Array.from({ length: Math.min(count, Math.max(vocabulary.length, 1)) }, (_, index) => vocabulary[index % vocabulary.length]);
+      return formatPage(scaffold, format, `${title}<div class="print-card-grid vocabulary-cards">${cardsToPrint.map((word, index) => `<section><span class="card-seed">Word ${index + 1} · SS-V</span><h2>${esc(word)}</h2><p><strong>Precise meaning</strong><br><span class="write-in">________________________________</span></p><p><strong>Use it in ${esc(subjectById(scaffold.subject).name)}</strong><br><span class="write-in">________________________________</span></p><small>Keep only while this word unlocks the subject thinking.</small></section>`).join("")}</div><p class="cut-note">Cut on dashed lines · complete precise meanings before pupil use</p>`);
     }
     if (format.id === "teacher-card") {
       const teacherPrompts = [...prompts.questions, `Listen for: ${prompts.misconception}`, "Which prompt can I remove now?"].slice(0, 4);
@@ -1657,19 +1777,66 @@
     }
     if (format.id === "mini-booklet") {
       const pages = [["Begin", cards[0]], ["Connect", cards[1] || prompts.questions[0]], ["Check", prompts.selfPrompt], ["Fade", "Name the prompt you can now keep without the booklet."]];
-      return formatPage(scaffold, format, `${title}<div class="booklet-grid">${pages.map(([label,item], index) => `<section><span>${index + 1} · ${esc(label)}</span><h2>${esc(item)}</h2>${blankLines(3)}</section>`).join("")}</div><p class="cut-note">Print duplex · flip on short edge · fold and staple on centre line</p>`);
+      const side = scaffold.printPart === "booklet-back" ? [pages[1], pages[2]] : [pages[3], pages[0]];
+      const numbers = scaffold.printPart === "booklet-back" ? [2, 3] : [4, 1];
+      return formatPage(scaffold, format, `<div class="booklet-side-label">${scaffold.printPart === "booklet-back" ? "Inside · pages 2–3" : "Outside · pages 4–1"}</div><div class="booklet-grid booklet-imposed">${side.map(([label,item], index) => `<section><span>${numbers[index]} · ${esc(label)}</span><h2>${esc(item)}</h2>${blankLines(5)}<small>SS-B${numbers[index]}</small></section>`).join("")}</div><p class="cut-note">Print double-sided · flip on short edge · fold on the centre line</p>`);
     }
     if (["modelling-page", "presentation-board"].includes(format.id)) {
       return formatPage(scaffold, format, `<div class="modelling-layout"><span class="eyebrow">${esc(format.id === "presentation-board" ? "Classroom board" : "Teacher modelling")}</span><h1>${esc(scaffold.title)}</h1><p>${esc(scaffold.objective)}</p><div class="modelling-focus"><strong>${esc(cards[0])}</strong><span>${esc(cards[1] || prompts.questions[0])}</span></div><div class="modelling-reveal"><small>Reveal next</small><strong>${esc(prompts.selfPrompt)}</strong></div></div>`);
     }
     if (format.id === "intervention-pack") {
-      return formatPage(scaffold, format, `${title}<div class="intervention-overview"><section><h2>Introduce</h2><p>Model one decision aloud. Do not complete the final decision required in the task.</p></section><section><h2>Use</h2><p>${esc(cards[0])}</p>${blankLines(3)}</section><section><h2>Check independence</h2><p>${esc(prompts.selfPrompt)}</p>${blankLines(2)}</section><section><h2>Reduce next</h2><p>${esc(RESOURCE.nextFade(scaffold))}</p></section></div>`);
+      const part = scaffold.printPart || "intervention-introduce";
+      const contentByPart = {
+        "intervention-introduce": ["1 · Introduce", "Model one decision aloud", "Name the barrier briefly. Demonstrate how one support is used, but stop before the pupil's protected decision.", cards[0]],
+        "intervention-use": ["2 · Use", "Pupil practice", cards[0], cards[1] || prompts.questions[0]],
+        "intervention-check": ["3 · Check", "Inspect independence", prompts.selfPrompt, "Cover one prompt. Record what the pupil can now initiate or check without it."],
+        "intervention-reduce": ["4 · Reduce", "Plan the next removal", RESOURCE.nextFade(scaffold), "Record the support that disappeared and the evidence that the core learning remained."]
+      };
+      const [label, heading, first, second] = contentByPart[part] || contentByPart["intervention-introduce"];
+      return formatPage(scaffold, format, `${title}<div class="intervention-page"><span class="card-seed">${esc(label)}</span><h2>${esc(heading)}</h2><section><p>${esc(first)}</p>${blankLines(5)}</section><section><p>${esc(second)}</p>${blankLines(5)}</section><aside>One objective · one protected decision · support reduced from observed evidence</aside></div>`, part);
     }
     if (format.id === "home-support") {
       return formatPage(scaffold, format, `${title}<div class="home-support-grid"><section><h2>For the pupil</h2><p>${esc(cards[0])}</p><p>${esc(prompts.selfPrompt)}</p>${blankLines(4)}</section><section><h2>For an adult helping</h2><p>Ask the prompt, wait, and return the decision to the pupil. Do not supply the answer.</p><p><strong>Useful language:</strong> ${esc(prompts.vocabulary.join(" · "))}</p><p><strong>Stop using this page when:</strong> the pupil can name and use their own next prompt.</p></section></div>`);
     }
     if (format.id === "mixed-pack") return state.print.paper === "a5" || state.print.orientation === "landscape" ? renderCompactWorkpage(scaffold) : renderResourceDocument(scaffold);
     return renderResourceDocument(scaffold);
+  }
+
+  function buildPrintResourcePages(scaffold, format = printFormatById()) {
+    const stageIds = format.id === "mixed-pack" ? DATA.stages.map(stage => stage.id) : (state.print.stages.length ? state.print.stages : [scaffold.stage]);
+    const stages = stageIds.map(stage => RESOURCE.createStage(scaffold, stage));
+    if (format.id === "display-poster" && state.print.arrangement === "2x2") {
+      return stages.flatMap(item => [0, 1, 2, 3].map(tile => ({ ...item, printTile: tile })));
+    }
+    if (format.id === "mini-booklet") {
+      return stages.flatMap(item => [{ ...item, printPart: "booklet-front" }, { ...item, printPart: "booklet-back" }]);
+    }
+    if (format.id === "intervention-pack") {
+      return stages.flatMap(item => ["introduce", "use", "check", "reduce"].map(part => ({ ...item, printPart: `intervention-${part}` })));
+    }
+    return stages;
+  }
+
+  function printPreflight(scaffold, format = printFormatById()) {
+    const options = { paper: state.print.paper, orientation: state.print.orientation, largePrint: state.print.largePrint, mode: normalisePrintMode(state.print.colour), duplex: Boolean(format.release?.recommendsDuplex) };
+    const local = RESOURCE.printPreflight ? RESOURCE.printPreflight(scaffold, format.id, options) : { errors: [], warnings: [] };
+    const errors = [...(local.blocking || local.errors || [])];
+    const warnings = [...(local.warnings || [])];
+    const rule = format.release || DATA.build5?.formatRules?.[format.id];
+    if (rule?.recommendsDuplex && format.id === "mini-booklet") warnings.push("Booklet output has two imposed sides; select short-edge duplex in the printer dialog.");
+    return { errors: [...new Set(errors)], warnings: [...new Set(warnings)], ready: errors.length === 0 };
+  }
+
+  function measuredPrintPreflight(root) {
+    const findings = [];
+    root.querySelectorAll(".paper").forEach((page, index) => {
+      const bottom = page.getBoundingClientRect().bottom;
+      const footer = page.querySelector(".resource-footer");
+      const overflowingChild = [...page.children].find(child => child.getBoundingClientRect().bottom > bottom + 1);
+      if (page.scrollHeight > page.clientHeight + 2 || overflowingChild) findings.push(`Page ${index + 1} needs reflow; content would be clipped.`);
+      if (footer && [...page.children].some(child => child !== footer && child.getBoundingClientRect().bottom > footer.getBoundingClientRect().top - 2)) findings.push(`Page ${index + 1} content reaches the footer.`);
+    });
+    return [...new Set(findings)];
   }
 
   function renderTeacherGuide(scaffold) {
@@ -1710,28 +1877,32 @@
   function renderPrintStudio() {
     const scaffold = activeForPrint();
     if (!scaffold) {
-      return `<div class="page-heading"><div><span class="eyebrow">Classroom-ready output</span><h2>Print Studio</h2><p>Control the pupil page and teacher guidance before printing.</p></div></div><div class="empty-help"><span class="empty-mark">${icon("print")}</span><h4>Bring a scaffold here when it is ready</h4><p>Create a scaffold first. Print Studio will then manage paper size, orientation, colour, answers and page order intentionally.</p><button class="button button-primary" data-action="new-scaffold">Create a scaffold</button></div>`;
+      return `<div class="page-heading"><div><span class="eyebrow">Classroom-ready output</span><h2>Print Studio</h2><p>Control the pupil resource and teacher guidance before printing.</p></div></div><div class="empty-help"><span class="empty-mark">${icon("print")}</span><h4>Bring a scaffold here when it is ready</h4><p>Create a scaffold first. Print Studio will then compose its paper, colour, growth stage and physical format intentionally.</p><button class="button button-primary" data-action="new-scaffold">Create a scaffold</button></div>`;
     }
     const format = printFormatById();
     const stageIds = format.id === "mixed-pack" ? DATA.stages.map(stage => stage.id) : (state.print.stages.length ? state.print.stages : [scaffold.stage]);
-    const stageScaffolds = stageIds.map(stage => RESOURCE.createStage(scaffold, stage));
-    const tiledScaffolds = format.id === "display-poster" && state.print.arrangement === "2x2" ? stageScaffolds.flatMap(item => [0,1,2,3].map(tile => ({ ...item, printTile: tile }))) : stageScaffolds;
-    const pages = tiledScaffolds.map(item => ({ type: "resource", scaffold: item }));
+    const pages = buildPrintResourcePages(scaffold, format).map(item => ({ type: "resource", scaffold: item }));
     if (state.print.teacherGuidance) pages.push({ type: "teacher", scaffold });
-    return `<div class="page-heading"><div><span class="eyebrow">Classroom-ready output</span><h2>Print Studio</h2><p>Preview exactly what will print. Reorder pages, simplify presentation and separate pupil material from teacher guidance.</p></div></div>
+    const rule = format.release || DATA.build5?.formatRules?.[format.id] || {};
+    const audit = printPreflight(scaffold, format);
+    const canReorder = !["mixed-pack", "mini-booklet", "intervention-pack"].includes(format.id) && state.print.arrangement !== "2x2";
+    const switchControl = (label, key) => `<div class="switch-row"><span id="print-${key}-label">${esc(label)}</span><button class="switch" role="switch" aria-labelledby="print-${key}-label" aria-checked="${state.print[key]}" data-print-toggle="${key}"></button></div>`;
+    return `<div class="page-heading"><div><span class="eyebrow">Classroom-ready output</span><h2>Print Studio</h2><p>Preview exactly what will print. Each format is composed for its classroom purpose rather than merely resized.</p></div></div>
       <div class="studio-layout"><aside class="studio-controls"><h3>Print choices</h3>
+        <div class="print-resource-identity"><span>Printing</span><strong>${esc(scaffold.title)}</strong><small>${esc(scaffold.year)} · ${esc(subjectById(scaffold.subject).name)} · ${esc(engineById(scaffold.engineId).name)}</small><button class="text-link" data-view="library">Choose another resource</button></div>
         <div class="control-group format-control"><h4>Classroom format</h4><button class="format-current" data-action="choose-print-format"><span>${esc(format.group)}</span><strong>${esc(format.name)}</strong><small>${esc(format.note)}</small></button></div>
-        <div class="control-group"><h4>Paper size</h4><div class="segmented">${["a4","a5"].map(value => `<button class="${state.print.paper === value ? "is-active" : ""}" data-print-option="paper" data-value="${value}">${value.toUpperCase()}</button>`).join("")}</div></div>
-        <div class="control-group"><h4>Orientation</h4><div class="segmented">${["portrait","landscape"].map(value => `<button class="${state.print.orientation === value ? "is-active" : ""}" data-print-option="orientation" data-value="${value}">${titleCase(value)}</button>`).join("")}</div></div>
-        <div class="control-group"><h4>Ink and photocopy</h4><div class="ink-options">${DATA.build3.printModes.map(value => `<button class="${state.print.colour === value ? "is-active" : ""}" data-print-option="colour" data-value="${value}">${titleCase(value)}</button>`).join("")}</div></div>
-        ${["cut-cards","mini-card"].includes(format.id) ? `<div class="control-group"><h4>Cards per page</h4><div class="segmented">${[4,6,8].map(value => `<button class="${String(state.print.arrangement) === String(value) ? "is-active" : ""}" data-print-option="arrangement" data-value="${value}">${value}</button>`).join("")}</div></div>` : ""}
-        ${format.id === "display-poster" ? `<div class="control-group"><h4>Poster tiling</h4><div class="segmented"><button class="${state.print.arrangement !== "2x2" ? "is-active" : ""}" data-print-option="arrangement" data-value="single">Single page</button><button class="${state.print.arrangement === "2x2" ? "is-active" : ""}" data-print-option="arrangement" data-value="2x2">2 × 2 tiles</button></div></div>` : ""}
+        <div class="control-group"><h4>Paper size</h4><div class="segmented">${["a4","a5"].map(value => `<button class="${state.print.paper === value ? "is-active" : ""}" aria-pressed="${state.print.paper === value}" data-print-option="paper" data-value="${value}" ${rule.safePaper && !rule.safePaper.includes(value) ? "disabled" : ""}>${value.toUpperCase()}</button>`).join("")}</div></div>
+        <div class="control-group"><h4>Orientation</h4><div class="segmented">${["portrait","landscape"].map(value => `<button class="${state.print.orientation === value ? "is-active" : ""}" aria-pressed="${state.print.orientation === value}" data-print-option="orientation" data-value="${value}">${titleCase(value)}</button>`).join("")}</div><small>Recommended: ${titleCase(rule.preferredOrientation || "portrait")}</small></div>
+        <div class="control-group"><h4>Print style</h4><div class="ink-options">${DATA.build5.printModes.map(mode => `<button class="${state.print.colour === mode.id ? "is-active" : ""}" aria-pressed="${state.print.colour === mode.id}" data-print-option="colour" data-value="${mode.id}" title="${esc(mode.note)}"><strong>${esc(mode.name)}</strong><small>${esc(mode.note)}</small></button>`).join("")}</div></div>
+        ${["cut-cards","mini-card","vocabulary-card"].includes(format.id) ? `<div class="control-group"><h4>Cards per page</h4><div class="segmented">${[4,6,8].map(value => `<button class="${String(state.print.arrangement) === String(value) ? "is-active" : ""}" aria-pressed="${String(state.print.arrangement) === String(value)}" data-print-option="arrangement" data-value="${value}">${value}</button>`).join("")}</div></div>` : ""}
+        ${format.id === "display-poster" ? `<div class="control-group"><h4>Poster tiling</h4><div class="segmented"><button class="${state.print.arrangement !== "2x2" ? "is-active" : ""}" aria-pressed="${state.print.arrangement !== "2x2"}" data-print-option="arrangement" data-value="single">Single page</button><button class="${state.print.arrangement === "2x2" ? "is-active" : ""}" aria-pressed="${state.print.arrangement === "2x2"}" data-print-option="arrangement" data-value="2x2">2 × 2 tiles</button></div></div>` : ""}
         <div class="control-group"><h4>Growth stages</h4><div class="print-stage-list">${DATA.stages.map(stage => `<label><input type="checkbox" data-print-stage="${stage.id}" ${stageIds.includes(stage.id) ? "checked" : ""} ${format.id === "mixed-pack" ? "disabled" : ""}><span>${stage.glyph} ${stage.name}</span></label>`).join("")}</div><small>Pupil pages carry discreet teacher codes, not public level labels.</small></div>
-        <div class="control-group"><div class="switch-row"><span>Teacher guidance</span><button class="switch" role="switch" aria-checked="${state.print.teacherGuidance}" data-print-toggle="teacherGuidance"></button></div><div class="switch-row"><span>Model answers</span><button class="switch" role="switch" aria-checked="${state.print.answers}" data-print-toggle="answers"></button></div><div class="switch-row"><span>Enlarged print</span><button class="switch" role="switch" aria-checked="${state.print.largePrint}" data-print-toggle="largePrint"></button></div><div class="switch-row"><span>Photocopy intelligence</span><button class="switch" role="switch" aria-checked="${state.print.photocopy}" data-print-toggle="photocopy"></button></div><div class="switch-row"><span>Crop marks</span><button class="switch" role="switch" aria-checked="${state.print.cropMarks}" data-print-toggle="cropMarks"></button></div><div class="switch-row"><span>Cut lines</span><button class="switch" role="switch" aria-checked="${state.print.cutLines}" data-print-toggle="cutLines"></button></div><div class="switch-row"><span>Duplex guidance</span><button class="switch" role="switch" aria-checked="${state.print.duplex}" data-print-toggle="duplex"></button></div></div>
-        ${state.print.duplex ? `<div class="duplex-note">${format.id === "mini-booklet" ? "Print double-sided, flip on the short edge, then fold at the centre." : "Print double-sided and flip on the long edge unless your printer preview shows otherwise."}</div>` : ""}
-        <button class="button button-primary" data-action="print-now"><span data-icon="print"></span> Print ${pages.length} page${pages.length === 1 ? "" : "s"}</button>
+        <div class="control-group">${switchControl("Teacher guidance", "teacherGuidance")}${switchControl("Larger pupil text", "largePrint")}${rule.cuttable ? switchControl("Show cut lines", "cutLines") : ""}${["display-poster", "cut-cards", "mini-card", "vocabulary-card"].includes(format.id) ? switchControl("Crop marks", "cropMarks") : ""}</div>
+        ${rule.recommendsDuplex ? `<div class="duplex-note"><strong>Two-sided format</strong><br>Print both imposed sides, select short-edge duplex, then fold on the centre line.</div>` : ""}
+        <div class="print-audit ${audit.ready ? "is-ready" : "has-errors"}"><strong>${audit.ready ? "Locally checked" : "Needs attention before printing"}</strong>${audit.errors.map(item => `<p>${esc(item)}</p>`).join("")}${audit.warnings.map(item => `<p>${esc(item)}</p>`).join("") || "<p>Format, paper and orientation are structurally compatible.</p>"}</div>
+        <button class="button button-primary" data-action="print-now" ${audit.ready ? "" : "disabled"}><span data-icon="print"></span> Print ${pages.length} page${pages.length === 1 ? "" : "s"}</button>
       </aside><div class="page-stack">${pages.map((page, index) => renderPrintPage(page.scaffold, page.type, index, {
-        allowStageMove: page.type === "resource" && format.id !== "mixed-pack" && state.print.arrangement !== "2x2" && stageIds.length > 1,
+        allowStageMove: page.type === "resource" && canReorder && stageIds.length > 1,
         first: page.type === "resource" && stageIds.indexOf(page.scaffold.stage) === 0,
         last: page.type === "resource" && stageIds.indexOf(page.scaffold.stage) === stageIds.length - 1
       })).join("")}</div></div>`;
@@ -1747,13 +1918,12 @@
       <section class="settings-card"><h3>New scaffold defaults</h3><p>Start closer to the choices you make most often.</p><div class="settings-list">
         <div class="settings-row"><span><strong>Starting support stage</strong><small>You can still change this during creation.</small></span><select data-setting-select="defaultStage">${DATA.stages.map(item => `<option value="${item.id}" ${item.id === state.settings.defaultStage ? "selected" : ""}>${esc(item.name)}</option>`).join("")}</select></div>
         <div class="settings-row"><span><strong>Default paper</strong><small>Used when Print Studio first opens.</small></span><select data-setting-select="defaultPaper"><option value="a4" ${state.settings.defaultPaper === "a4" ? "selected" : ""}>A4</option><option value="a5" ${state.settings.defaultPaper === "a5" ? "selected" : ""}>A5</option></select></div>
-        <div class="settings-row"><span><strong>Default ink</strong><small>Colour can always be changed per print.</small></span><select data-setting-select="defaultColour">${DATA.build3.printModes.map(mode => `<option value="${mode}" ${state.settings.defaultColour === mode ? "selected" : ""}>${titleCase(mode)}</option>`).join("")}</select></div>
+        <div class="settings-row"><span><strong>Default print style</strong><small>The page hierarchy is rebuilt for every style.</small></span><select data-setting-select="defaultColour">${DATA.build5.printModes.map(mode => `<option value="${mode.id}" ${state.settings.defaultColour === mode.id ? "selected" : ""}>${esc(mode.name)}</option>`).join("")}</select></div>
         <div class="settings-row"><span><strong>Typical year group</strong><small>Used as a starting point, never a limit.</small></span><select data-setting-select="typicalYear">${DATA.years.map(year => `<option ${state.settings.typicalYear === year ? "selected" : ""}>${esc(year)}</option>`).join("")}</select></div>
         <div class="settings-row"><span><strong>Preferred density</strong><small>Controls initial resource spacing.</small></span><select data-setting-select="preferredDensity">${DATA.build3.densityModes.map(mode => `<option value="${mode}" ${state.settings.preferredDensity === mode ? "selected" : ""}>${titleCase(mode)}</option>`).join("")}</select></div>
       </div></section>
       <section class="settings-card"><h3>Classroom resource preferences</h3><p>Remember practical defaults transparently on this device.</p><div class="settings-list">
         ${settingSwitch("Include teacher guidance", "Add concise introduction, misuse and fading guidance by default.", "includeTeacherGuidance")}
-        ${settingSwitch("Include answer pages", "Show optional answer guidance in Print Studio.", "includeAnswers")}
         ${settingSwitch("Page numbers", "Number printed pages where the format supports it.", "pageNumbers")}
         <div class="settings-row"><span><strong>Line thickness</strong><small>Useful for photocopying and enlarged print.</small></span><select data-setting-select="lineThickness"><option value="standard" ${state.settings.lineThickness === "standard" ? "selected" : ""}>Standard</option><option value="strong" ${state.settings.lineThickness === "strong" ? "selected" : ""}>Stronger</option></select></div>
         <div class="settings-row settings-row-stack"><span><strong>School or class label</strong><small>Optional. Never enter pupil names.</small></span><div><input class="input" data-setting-field="schoolLabel" value="${esc(state.settings.schoolLabel)}" placeholder="School name"><input class="input" data-setting-field="classLabel" value="${esc(state.settings.classLabel)}" placeholder="Class label"></div></div>
@@ -1764,20 +1934,23 @@
         ${settingSwitch("Keep raw AI responses in backups", "Turn off for smaller exported files; local resource provenance remains.", "aiIncludeResponseHistory")}
         <div class="settings-row"><span><strong>Remembered choices</strong><small>${esc(AI.taskById(state.preferences.aiTask || "accurate-examples").name)} · ${esc(state.settings.aiPromptDepth)}</small></span><button class="button button-compact" data-action="reset-ai-preferences">Reset</button></div>
       </div></section>
-      <section class="settings-card"><h3>Local data</h3><p>Back up or move your library without creating an account.</p><div class="settings-list"><div class="settings-row"><span><strong>Export a backup</strong><small>Download scaffolds, settings and reflections as JSON.</small></span><button class="button button-compact" data-action="export-data"><span data-icon="download"></span> Export</button></div><div class="settings-row"><span><strong>Import a backup</strong><small>Restore a Scaffold Seeds JSON backup.</small></span><label class="button button-compact" for="import-file"><span data-icon="upload"></span> Import</label><input class="file-input" type="file" id="import-file" accept="application/json" data-action="import-data"></div></div></section>
+      <section class="settings-card"><h3>Local data</h3><p>Back up, recover or move your library without creating an account.</p><div class="settings-list"><div class="settings-row"><span><strong>Export a backup</strong><small>Download scaffolds, the current draft, settings and reflections as JSON.</small></span><button class="button button-compact" data-action="export-data"><span data-icon="download"></span> Export</button></div><div class="settings-row"><span><strong>Import a backup</strong><small>Inspect, merge or replace from a Scaffold Seeds JSON file.</small></span><label class="button button-compact" for="import-file"><span data-icon="upload"></span> Import</label><input class="file-input" type="file" id="import-file" accept="application/json" data-action="import-data"></div><div class="settings-row"><span><strong>Recovery checkpoints</strong><small>Automatic snapshots created before imports, restores and clearing.</small></span><button class="button button-compact" data-action="recovery-checkpoints">Review</button></div><div class="settings-row"><span><strong>Recently deleted</strong><small>${state.archives.length} recoverable resource${state.archives.length === 1 ? "" : "s"}.</small></span><button class="button button-compact" data-action="recently-deleted">Review</button></div></div></section>
       <section class="settings-card"><h3>Privacy and reset</h3><p>Scaffold Seeds has no login or server. Copied prompts leave only when you paste them elsewhere; returned content stays in this browser.</p><div class="settings-list"><div class="settings-row"><span><strong>Pupil-information guardrail</strong><small>Never include names, diagnoses, assessment records, family details or safeguarding information in an external prompt.</small></span><span class="local-check-label">Local warning only</span></div><div class="settings-row"><span><strong>Clear local data</strong><small>Deletes saved scaffolds, AI rounds, raw responses, reflections and the current draft.</small></span><button class="button button-compact button-danger" data-action="clear-data"><span data-icon="trash"></span> Clear</button></div></div></section>
     </div>`;
   }
 
   function settingSwitch(title, description, key) {
-    return `<div class="settings-row"><span><strong>${esc(title)}</strong><small>${esc(description)}</small></span><button class="switch" role="switch" aria-checked="${state.settings[key]}" data-setting-toggle="${key}"></button></div>`;
+    const id = `setting-${key}-label`;
+    return `<div class="settings-row"><span id="${id}"><strong>${esc(title)}</strong><small>${esc(description)}</small></span><button class="switch" role="switch" aria-labelledby="${id}" aria-checked="${state.settings[key]}" data-setting-toggle="${key}"></button></div>`;
   }
 
   function openModal({ title, subtitle = "", body, footer = "" }) {
+    modalReturnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     modalLayer.hidden = false;
-    modalLayer.innerHTML = `<section class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title"><div class="modal-head"><div><h2 id="modal-title">${esc(title)}</h2>${subtitle ? `<p>${esc(subtitle)}</p>` : ""}</div><button class="icon-button" data-action="close-modal" aria-label="Close dialog">${icon("close")}</button></div><div class="modal-body">${body}</div>${footer ? `<div class="modal-footer">${footer}</div>` : ""}</section>`;
+    modalLayer.innerHTML = `<section class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title" ${subtitle ? 'aria-describedby="modal-description"' : ""}><div class="modal-head"><div><h2 id="modal-title">${esc(title)}</h2>${subtitle ? `<p id="modal-description">${esc(subtitle)}</p>` : ""}</div><button class="icon-button" data-action="close-modal" aria-label="Close dialog">${icon("close")}</button></div><div class="modal-body">${body}</div>${footer ? `<div class="modal-footer">${footer}</div>` : ""}</section>`;
     hydrateIcons(modalLayer);
     document.body.style.overflow = "hidden";
+    if (appShell) appShell.inert = true;
     setTimeout(() => modalLayer.querySelector("button, input, textarea")?.focus(), 0);
   }
 
@@ -1785,6 +1958,10 @@
     modalLayer.hidden = true;
     modalLayer.innerHTML = "";
     document.body.style.overflow = "";
+    if (appShell) appShell.inert = false;
+    const returnTo = modalReturnFocus;
+    modalReturnFocus = null;
+    if (returnTo?.isConnected) returnTo.focus();
   }
 
   function showAllBarriers() {
@@ -1819,25 +1996,28 @@
     const reviewCount = audit.filter(item => item.status !== "Strong").length;
     openModal({
       title: reviewCount ? `Scaffold quality · ${reviewCount} review point${reviewCount === 1 ? "" : "s"}` : "Scaffold quality · Strong",
-      subtitle: "Eleven explainable professional judgements—never a fake effectiveness percentage.",
-      body: `<div class="quality-report build3-quality">${audit.map(item => `<section class="quality-${esc(item.status.toLowerCase().replaceAll(" ", "-"))}"><div class="quality-report-head"><strong>${esc(item.label)}</strong><span>${esc(item.status)}</span></div><p>${esc(item.reason)}</p>${item.action && item.status !== "Strong" ? `<small>${esc(item.action)}</small>` : ""}</section>`).join("")}</div><div class="quality-principle"><strong>Professional judgement remains final.</strong><p>The real test is what pupils do when the support becomes lighter. Use one or two independence checks rather than generating a quiz.</p></div>`
+      subtitle: `${audit.length} explainable local judgements—never a fake effectiveness percentage.`,
+      body: `<div class="quality-report quality-judgements">${audit.map(item => `<section class="quality-${esc(item.status.toLowerCase().replaceAll(" ", "-"))}"><div class="quality-report-head"><strong>${esc(item.label)}</strong><span>${esc(item.status)}</span></div><p>${esc(item.reason)}</p>${item.action && item.status !== "Strong" ? `<small>${esc(item.action)}</small>` : ""}</section>`).join("")}</div><div class="quality-principle"><strong>Professional judgement remains final.</strong><p>The real test is what pupils do when the support becomes lighter. Use one or two independence checks rather than generating a quiz.</p></div>`
     });
   }
 
   function showUseReflection(id) {
     const scaffold = state.library.find(item => item.id === id) || (state.activeScaffold?.id === id ? state.activeScaffold : null);
     if (!scaffold) return;
-    const reflection = scaffold.reflection || {};
+    const reflection = scaffold.reflections?.[0] || scaffold.reflection || {};
     const choice = (name, value, label) => `<label class="reflection-choice"><input type="radio" name="${name}" value="${value}" ${reflection[name] === value ? "checked" : ""}><span>${label}</span></label>`;
     openModal({
       title: "Reflect after use",
       subtitle: `${scaffold.title} · observations here improve future local recommendations.`,
       body: `<form class="use-reflection" id="use-reflection-form" data-id="${esc(scaffold.id)}">
         <fieldset><legend>Did the scaffold remove the intended barrier?</legend><div class="reflection-choices">${choice("worked", "not-yet", "Not yet")}${choice("worked", "partly", "Partly")}${choice("worked", "yes", "Yes")}</div></fieldset>
+        <div class="form-field"><label for="reflection-worked">What worked?</label><textarea id="reflection-worked" name="whatWorked" rows="3" placeholder="The specific prompt, representation or teacher move that opened the learning…">${esc(reflection.whatWorked || "")}</textarea></div>
         <div class="form-field"><label for="reflection-surprise">What surprised you?</label><textarea id="reflection-surprise" name="surprise" rows="3" placeholder="A response, strategy or moment you did not expect…">${esc(reflection.surprise || "")}</textarea></div>
-        <div class="form-field"><label for="reflection-misconception">What misconception actually appeared?</label><textarea id="reflection-misconception" name="misconception" rows="3" placeholder="Use the pupil's words or action if useful…">${esc(reflection.misconception || "")}</textarea></div>
+        <div class="form-field"><label for="reflection-misconception">What misconception actually appeared?</label><textarea id="reflection-misconception" name="misconceptionObserved" rows="3" placeholder="Use the pupil's words or action if useful…">${esc(reflection.misconceptionObserved || reflection.misconception || "")}</textarea></div>
+        <div class="form-field"><label for="reflection-disappeared">What support disappeared during the lesson?</label><textarea id="reflection-disappeared" name="supportRemoved" rows="2" placeholder="A model, word bank, prompt or adult cue pupils stopped needing…">${esc(reflection.supportRemoved || "")}</textarea></div>
         <fieldset><legend>Would you reuse this structure?</legend><div class="reflection-choices">${choice("reuse", "no", "No")}${choice("reuse", "adapt", "With changes")}${choice("reuse", "yes", "Yes")}</div></fieldset>
-        <div class="form-field"><label for="reflection-reduce">What could reduce next time?</label><textarea id="reflection-reduce" name="reduceNext" rows="3" placeholder="A prompt, example, word bank or visual cue to remove…">${esc(reflection.reduceNext || "")}</textarea></div>
+        <div class="form-field"><label for="reflection-reduce">What would you remove next time?</label><textarea id="reflection-reduce" name="removeNext" rows="3" placeholder="A prompt, example, word bank or visual cue that no longer earns its place…">${esc(reflection.removeNext || reflection.reduceNext || "")}</textarea></div>
+        <div class="form-field"><label for="reflection-next">Next professional decision</label><textarea id="reflection-next" name="nextDecision" rows="2" placeholder="The one adjustment you want surfaced when a similar barrier returns…">${esc(reflection.nextDecision || "")}</textarea></div>
       </form>`,
       footer: '<button class="button" data-action="close-modal">Not now</button><button class="button button-primary" data-action="save-use-reflection">Save reflection</button>'
     });
@@ -1852,16 +2032,22 @@
     const worked = fields.get("worked") || "partly";
     const reuse = fields.get("reuse") || "adapt";
     const currentStageIndex = DATA.stages.findIndex(stage => stage.id === scaffold.stage);
-    scaffold.reflection = {
+    const reflection = {
+      id: uid(),
       worked,
       reuse,
+      whatWorked: String(fields.get("whatWorked") || "").trim(),
       surprise: String(fields.get("surprise") || "").trim(),
-      misconception: String(fields.get("misconception") || "").trim(),
-      reduceNext: String(fields.get("reduceNext") || "").trim(),
+      misconceptionObserved: String(fields.get("misconceptionObserved") || "").trim(),
+      supportRemoved: String(fields.get("supportRemoved") || "").trim(),
+      removeNext: String(fields.get("removeNext") || "").trim(),
+      nextDecision: String(fields.get("nextDecision") || "").trim(),
       recommendedNextStage: worked === "yes" ? (DATA.stages[Math.min(currentStageIndex + 1, DATA.stages.length - 1)]?.id || scaffold.stage) : scaffold.stage,
       updatedAt: new Date().toISOString()
     };
-    const reflectionText = `${scaffold.reflection.surprise} ${scaffold.reflection.reduceNext}`.toLowerCase();
+    scaffold.reflections = [reflection, ...(scaffold.reflections || (scaffold.reflection ? [scaffold.reflection] : []))].slice(0, 30);
+    scaffold.reflection = reflection;
+    const reflectionText = `${reflection.whatWorked} ${reflection.surprise} ${reflection.supportRemoved} ${reflection.removeNext}`.toLowerCase();
     if (/sentence stem|stems/.test(reflectionText)) state.preferences.questionPrompts = true;
     if (/more space|larger writing|bigger lines|wider lines/.test(reflectionText)) state.preferences.largerWritingArea = true;
     writeStore(STORAGE.preferences, state.preferences);
@@ -1898,7 +2084,7 @@
   }
 
   function saveScaffold() {
-    const scaffold = state.activeScaffold ? { ...state.activeScaffold, ...scaffoldFromDraft(), id: state.activeScaffold.id, createdAt: state.activeScaffold.createdAt, reflection: state.activeScaffold.reflection || null } : scaffoldFromDraft();
+    const scaffold = state.activeScaffold ? { ...state.activeScaffold, ...scaffoldFromDraft(), id: state.activeScaffold.id, createdAt: state.activeScaffold.createdAt, reflection: state.activeScaffold.reflection || null, reflections: state.activeScaffold.reflections || (state.activeScaffold.reflection ? [state.activeScaffold.reflection] : []) } : scaffoldFromDraft();
     scaffold.updatedAt = new Date().toISOString();
     const index = state.library.findIndex(item => item.id === scaffold.id);
     if (index >= 0) {
@@ -1906,24 +2092,28 @@
       const versions = [...(previous.versions || [])];
       if (meaningfulHash(previous) !== meaningfulHash(scaffold)) versions.unshift(versionSnapshot(previous, `Before ${formatDate(scaffold.updatedAt)}`));
       scaffold.versions = versions.slice(0, 16);
+      scaffold.revision = (previous.revision || 1) + 1;
       state.library[index] = scaffold;
     }
-    else state.library.unshift(scaffold);
+    else { scaffold.revision = 1; state.library.unshift(scaffold); }
     state.activeScaffold = scaffold;
     state.draft.editingId = scaffold.id;
-    writeStore(STORAGE.library, state.library);
-    saveDraft();
-    toast(index >= 0 ? "Scaffold changes saved locally." : "Scaffold saved to your library.");
+    const librarySaved = writeStore(STORAGE.library, state.library);
+    const draftSaved = saveDraft();
+    if (librarySaved && draftSaved) toast(index >= 0 ? "Scaffold changes saved locally." : "Scaffold saved to your library.");
     render();
   }
 
   function versionSnapshot(scaffold, name = "Saved checkpoint") {
     const { versions, ...snapshot } = scaffold;
-    return { id: uid(), name, savedAt: new Date().toISOString(), snapshot: JSON.parse(JSON.stringify(snapshot)) };
+    const compact = JSON.parse(JSON.stringify(snapshot));
+    compact.assets = (compact.assets || []).map(({ dataUrl, analysis, ...metadata }) => ({ ...metadata, assetStoredSeparately: Boolean(dataUrl), analysis }));
+    if (compact.ai?.lastVerification?.raw) delete compact.ai.lastVerification.raw;
+    return { id: uid(), name, savedAt: new Date().toISOString(), snapshot: compact };
   }
 
   function meaningfulHash(scaffold) {
-    const { updatedAt, lastPrintedAt, versions, favourite, reflection, ...meaningful } = scaffold || {};
+    const { updatedAt, lastPrintedAt, versions, favourite, reflection, reflections, ...meaningful } = scaffold || {};
     return JSON.stringify(meaningful);
   }
 
@@ -1962,8 +2152,17 @@
       state.library.unshift(restored);
     } else {
       const currentVersion = versionSnapshot(parent, "Before version restore");
-      Object.assign(parent, restored, { id: parent.id, createdAt: parent.createdAt, updatedAt: now, versions: [currentVersion, ...(parent.versions || [])].slice(0, 16) });
-      if (state.activeScaffold?.id === parent.id) state.activeScaffold = parent;
+      const assetData = new Map((parent.assets || []).map(asset => [asset.id, asset.dataUrl]));
+      restored.assets = (restored.assets || []).map(asset => assetData.get(asset.id) ? { ...asset, dataUrl: assetData.get(asset.id) } : asset);
+      const replacement = { ...restored, id: parent.id, createdAt: parent.createdAt, updatedAt: now, revision: (parent.revision || 1) + 1, versions: [currentVersion, ...(parent.versions || [])].slice(0, 16) };
+      const index = state.library.findIndex(item => item.id === parent.id);
+      state.library[index] = replacement;
+      if (state.activeScaffold?.id === parent.id) {
+        state.activeScaffold = replacement;
+        state.draft = normaliseDraft({ ...replacement, editingId: replacement.id });
+        state.aiWorkspace = safeAIWorkspace(replacement, readStore(`${STORAGE.aiWorkspace}.${replacement.id}`, null));
+        saveDraft();
+      }
     }
     writeStore(STORAGE.library, state.library);
     closeModal();
@@ -2032,7 +2231,7 @@
     const original = state.library.find(item => item.id === id);
     if (!original) return;
     const now = new Date().toISOString();
-    const copy = { ...original, id: uid(), title: `${original.title} · copy`, favourite: false, archived: false, reflection: null, versions: [], createdAt: now, updatedAt: now };
+    const copy = { ...original, id: uid(), title: `${original.title} · copy`, favourite: false, archived: false, reflection: null, reflections: [], versions: [], createdAt: now, updatedAt: now };
     state.library.unshift(copy);
     writeStore(STORAGE.library, state.library);
     toast("A fresh copy has been added to your library.");
@@ -2041,18 +2240,65 @@
 
   function deleteScaffold(id) {
     const item = state.library.find(scaffold => scaffold.id === id);
-    if (!item?.archived || !window.confirm(`Permanently delete “${item.title}”? Export a backup first if you may need it later.`)) return;
+    if (!item?.archived || !window.confirm(`Move “${item.title}” to Recently deleted? You can restore it from Settings.`)) return;
+    const workspace = readStore(`${STORAGE.aiWorkspace}.${id}`, null);
+    const deleted = { id: uid(), resourceId: item.id, deletedAt: new Date().toISOString(), resource: JSON.parse(JSON.stringify(item)), workspace };
+    const nextArchives = [deleted, ...(Array.isArray(state.archives) ? state.archives : [])].slice(0, 50);
+    if (!writeStore(STORAGE.archives, nextArchives)) { toast("The scaffold was not removed because a recovery copy could not be saved."); return; }
+    const previousLibrary = state.library;
     state.library = state.library.filter(scaffold => scaffold.id !== id);
-    localStorage.removeItem(`${STORAGE.aiWorkspace}.${id}`);
+    if (!writeStore(STORAGE.library, state.library)) {
+      state.library = previousLibrary;
+      toast("The scaffold was not removed because the library could not be saved.");
+      return;
+    }
+    state.archives = nextArchives;
     if (state.activeScaffold?.id === id) state.activeScaffold = state.library[0] || null;
-    writeStore(STORAGE.library, state.library);
-    toast("Archived scaffold permanently deleted. It can be recovered only from an exported backup.");
+    toast("Moved to Recently deleted. It can be restored from Settings.");
     render();
   }
 
+  function showRecentlyDeleted() {
+    const deleted = Array.isArray(state.archives) ? state.archives : [];
+    openModal({
+      title: "Recently deleted",
+      subtitle: "Resources remain recoverable here until you explicitly remove them.",
+      body: deleted.length ? `<div class="version-list">${deleted.map(item => `<section><div><span class="eyebrow">Deleted ${relativeDate(item.deletedAt)}</span><h3>${esc(item.resource?.title || "Untitled scaffold")}</h3><p>${esc(item.resource?.year || "")} · ${esc(subjectById(item.resource?.subject).name)}</p></div><div><button class="button button-compact" data-action="restore-deleted" data-id="${esc(item.id)}">Restore</button><button class="text-link danger-link" data-action="purge-deleted" data-id="${esc(item.id)}">Delete permanently</button></div></section>`).join("")}</div>` : '<div class="empty-help"><h4>Nothing here</h4><p>Deleted resources will be held here for recovery.</p></div>'
+    });
+  }
+
+  function restoreDeleted(id) {
+    const record = state.archives.find(item => item.id === id);
+    if (!record?.resource) return;
+    const restored = migrateLibrary([record.resource])[0];
+    if (!restored) { toast("That recovery copy could not be restored safely."); return; }
+    if (state.library.some(item => item.id === restored.id)) restored.id = uid();
+    restored.archived = true;
+    restored.updatedAt = new Date().toISOString();
+    state.library.unshift(restored);
+    if (!writeStore(STORAGE.library, state.library)) { state.library.shift(); return; }
+    if (record.workspace) writeStore(`${STORAGE.aiWorkspace}.${restored.id}`, { ...record.workspace, resourceId: restored.id });
+    state.archives = state.archives.filter(item => item.id !== id);
+    writeStore(STORAGE.archives, state.archives);
+    closeModal();
+    toast("Resource restored to the Archive.");
+    render();
+  }
+
+  function purgeDeleted(id) {
+    const record = state.archives.find(item => item.id === id);
+    if (!record || !window.confirm(`Permanently delete “${record.resource?.title || "this resource"}”? This cannot be undone.`)) return;
+    state.archives = state.archives.filter(item => item.id !== id);
+    writeStore(STORAGE.archives, state.archives);
+    showRecentlyDeleted();
+  }
+
   function exportData() {
+    if (state.aiWorkspace) saveAIWorkspace();
+    saveDraft();
     const library = state.settings.aiIncludeResponseHistory ? state.library : state.library.map(item => AI.portableResource(item, { excludeHistory: true }).resource);
-    const payload = JSON.stringify({ product: "Scaffold Seeds", version: 4, schemaVersion: 4, exportedAt: new Date().toISOString(), library, settings: state.settings, reflections: state.reflections, preferences: state.preferences, aiWorkspaces: storedAIWorkspaces(state.settings.aiIncludeResponseHistory) }, null, 2);
+    const bundle = PERSISTENCE.createBundle({ ...durableBundle(), library });
+    const payload = JSON.stringify(bundle, null, 2);
     const url = URL.createObjectURL(new Blob([payload], { type: "application/json" }));
     const link = document.createElement("a");
     link.href = url;
@@ -2067,31 +2313,71 @@
   async function importData(file) {
     if (!file) return;
     try {
-      const data = JSON.parse(await file.text());
-      if (!Array.isArray(data.library) || typeof data.settings !== "object") throw new Error("invalid");
-      state.library = migrateLibrary(data.library.filter(item => item && typeof item === "object" && typeof item.title === "string" && typeof item.subject === "string"));
-      state.settings = { ...defaultSettings, ...data.settings };
-      state.reflections = data.reflections || {};
-      state.preferences = data.preferences || {};
-      writeStore(STORAGE.library, state.library);
-      writeStore(STORAGE.settings, state.settings);
-      writeStore(STORAGE.reflections, state.reflections);
-      writeStore(STORAGE.preferences, state.preferences);
-      if (data.aiWorkspaces && typeof data.aiWorkspaces === "object") Object.entries(data.aiWorkspaces).forEach(([resourceId, workspace]) => {
-        if (workspace && typeof workspace === "object" && workspace.resourceId === resourceId) writeStore(`${STORAGE.aiWorkspace}.${resourceId}`, AI.createWorkspace(state.library.find(item => item.id === resourceId) || {}, workspace));
+      if (file.size > (PERSISTENCE?.MAX_BACKUP_BYTES || 50 * 1024 * 1024)) throw new Error("too-large");
+      const rawText = await file.text();
+      const validation = PERSISTENCE.validateBundle(rawText);
+      if (!validation.valid) {
+        openModal({ title: "This backup cannot be imported safely", subtitle: "No current data was changed.", body: `<div class="audit-list">${validation.errors.map(error => `<p><strong>${esc(error.code)}</strong> · ${esc(error.message)}</p>`).join("") || "<p>The file did not contain a valid resource envelope.</p>"}</div>`, footer: '<button class="button" data-action="close-modal">Close</button>' });
+        return;
+      }
+      state.pendingImport = { rawText, validation, fileName: file.name };
+      const accepted = validation.bundle.library.length;
+      const warningCount = validation.warnings.length;
+      openModal({
+        title: "Review backup import",
+        subtitle: `${file.name} · nothing changes until you choose an import method.`,
+        body: `<div class="import-preview"><dl><div><dt>Accepted resources</dt><dd>${accepted}</dd></div><div><dt>Envelope</dt><dd>${esc(validation.detectedEnvelope)}</dd></div><div><dt>Source schema</dt><dd>${validation.sourceSchemaVersion}${validation.migrated ? " · will be migrated" : ""}</dd></div><div><dt>Warnings</dt><dd>${warningCount}</dd></div><div><dt>Quarantined</dt><dd>${validation.quarantined.length}</dd></div></dl>${validation.warnings.length ? `<details><summary>Review ${warningCount} import note${warningCount === 1 ? "" : "s"}</summary><ul>${validation.warnings.slice(0, 20).map(item => `<li>${esc(item.message)}</li>`).join("")}</ul></details>` : ""}<p><strong>Merge</strong> keeps this library and imports ID conflicts as copies. <strong>Replace</strong> creates a recovery checkpoint, then uses the backup as the library.</p></div>`,
+        footer: '<button class="button" data-action="close-modal">Cancel</button><button class="button" data-action="commit-import" data-mode="merge">Merge safely</button><button class="button button-primary" data-action="commit-import" data-mode="replace">Replace after checkpoint</button>'
       });
-      state.activeScaffold = state.library[0] || null;
-      state.aiWorkspace = AI.createWorkspace(state.activeScaffold || {}, state.activeScaffold?.id ? readStore(`${STORAGE.aiWorkspace}.${state.activeScaffold.id}`, null) : null);
-      applySettings();
-      toast(`Imported ${state.library.length} scaffold${state.library.length === 1 ? "" : "s"}.`);
-      render();
     } catch (error) {
-      toast("That file is not a valid Scaffold Seeds backup.");
+      toast(error?.message === "too-large" ? "That backup exceeds the safe local import size." : "That file is not a valid Scaffold Seeds backup.");
     }
   }
 
-  function clearData() {
-    if (!window.confirm("Clear every saved scaffold, reflection and draft from this browser? This cannot be undone.")) return;
+  async function commitImport(mode) {
+    const pending = state.pendingImport;
+    if (!pending || !["merge", "replace"].includes(mode)) return;
+    const buttons = [...modalLayer.querySelectorAll("button")];
+    buttons.forEach(button => { button.disabled = true; });
+    setSaveStatus("saving");
+    durableCommitInFlight = true;
+    try {
+      const result = await PERSISTENCE.importBundle(pending.rawText, { mode, conflict: "copy", keepCurrentSettings: mode === "merge", recoveryLabel: `Before importing ${pending.fileName}` });
+      durableGeneration = Number(result.snapshot.metadata?.generation || durableGeneration + 1);
+      cacheSnapshot(result.snapshot);
+      durableReady = true;
+      failedStores.delete("durable");
+      state.pendingImport = null;
+      closeModal();
+      setSaveStatus(failedStores.size ? "issue" : "saved");
+      const importedCount = pending.validation.bundle.library.length;
+      toast(`${importedCount} resource${importedCount === 1 ? "" : "s"} ${mode === "merge" ? "merged" : "restored"}. A pre-import recovery checkpoint was kept.`);
+      render();
+    } catch (error) {
+      buttons.forEach(button => { button.disabled = false; });
+      setSaveStatus("issue");
+      toast("Import stopped without changing the current library. Review the file or try again.");
+    } finally { durableCommitInFlight = false; }
+  }
+
+  async function clearData() {
+    if (!window.confirm("Clear every saved scaffold, reflection and draft from this browser? A recovery checkpoint will be created first.")) return;
+    try {
+      if (durableReady) {
+        durableCommitInFlight = false;
+        await commitDurableSnapshot();
+        if (failedStores.has("durable")) throw new Error("durable-save-failed");
+        await PERSISTENCE.createRecoverySnapshot("Before clearing local data");
+        durableCommitInFlight = true;
+        const result = await PERSISTENCE.commitSnapshot({ product: "Scaffold Seeds", schemaVersion: 5, library: [], settings: defaultSettings, reflections: {}, preferences: {}, draft: null, aiWorkspaces: {} }, { expectedGeneration: durableGeneration, createRecovery: false });
+        durableGeneration = Number(result.snapshot.metadata?.generation || durableGeneration + 1);
+      }
+    } catch (error) {
+      durableCommitInFlight = false;
+      toast("Clear stopped because a recovery checkpoint could not be confirmed.");
+      return;
+    }
+    durableCommitInFlight = false;
     Object.values(STORAGE).forEach(key => localStorage.removeItem(key));
     for (let index = localStorage.length - 1; index >= 0; index -= 1) {
       const key = localStorage.key(index);
@@ -2104,19 +2390,39 @@
     state.draft = normaliseDraft(null);
     state.activeScaffold = null;
     state.settings = { ...defaultSettings };
-    state.aiWorkspace = AI.createWorkspace({});
+    state.aiWorkspace = safeAIWorkspace({});
     applySettings();
-    toast("Local Scaffold Seeds data has been cleared.");
+    toast("Local data cleared. A recovery checkpoint is available in Settings.");
     render();
   }
 
-  function printNow() {
+  async function showRecoveryCheckpoints() {
+    try {
+      const snapshots = await PERSISTENCE.listRecoverySnapshots();
+      openModal({ title: "Recovery checkpoints", subtitle: "Restoring creates another checkpoint first, so the current library is not silently lost.", body: snapshots.length ? `<div class="version-list">${snapshots.slice(0, 20).map(item => `<section><div><span class="eyebrow">${relativeDate(item.createdAt)}</span><h3>${esc(item.label)}</h3><p>${item.bundle?.library?.length || 0} resource${item.bundle?.library?.length === 1 ? "" : "s"}</p></div><button class="button button-compact" data-action="restore-recovery" data-id="${esc(item.id)}">Restore</button></section>`).join("")}</div>` : '<div class="empty-help"><h4>No recovery checkpoints yet</h4><p>They are created before high-risk local operations.</p></div>' });
+    } catch (error) { toast("Recovery checkpoints could not be opened in this browsing mode."); }
+  }
+
+  async function restoreRecoveryCheckpoint(id) {
+    try {
+      durableCommitInFlight = true;
+      const result = await PERSISTENCE.restoreRecoverySnapshot(id);
+      durableGeneration = Number(result.snapshot.metadata?.generation || durableGeneration + 1);
+      cacheSnapshot(result.snapshot);
+      closeModal();
+      toast("Recovery checkpoint restored. The replaced state was checkpointed too.");
+      render();
+    } catch (error) { toast("That recovery checkpoint could not be restored."); }
+    finally { durableCommitInFlight = false; }
+  }
+
+  async function printNow() {
     const scaffold = activeForPrint();
     if (!scaffold) return;
     const format = printFormatById();
-    const stageIds = format.id === "mixed-pack" ? DATA.stages.map(stage => stage.id) : (state.print.stages.length ? state.print.stages : [scaffold.stage]);
-    const stageResources = stageIds.map(stage => RESOURCE.createStage(scaffold, stage));
-    const resources = format.id === "display-poster" && state.print.arrangement === "2x2" ? stageResources.flatMap(item => [0,1,2,3].map(tile => ({ ...item, printTile: tile }))) : stageResources;
+    const audit = printPreflight(scaffold, format);
+    if (!audit.ready) { toast("Resolve the print preflight before printing."); return; }
+    const resources = buildPrintResourcePages(scaffold, format);
     const printRoot = document.getElementById("print-root");
     printRoot.innerHTML = resources.map(item => applyPaperOptions(renderFormatDocument(item))).join("") + (state.print.teacherGuidance ? renderTeacherGuide(scaffold) : "");
     let style = document.getElementById("print-dynamic-style");
@@ -2132,7 +2438,16 @@
       if (libraryItem.ai?.status === "teacher-approved") libraryItem.ai.status = "print-ready";
       writeStore(STORAGE.library, state.library);
     }
-    setTimeout(() => window.print(), 30);
+    try { await document.fonts?.ready; } catch (error) { /* Fallback fonts preserve the layout if font loading fails. */ }
+    await Promise.all([...printRoot.querySelectorAll("img")].map(image => image.decode?.().catch(() => undefined)));
+    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const measured = measuredPrintPreflight(printRoot);
+    if (measured.length) {
+      printRoot.innerHTML = "";
+      openModal({ title: "Print layout needs reflow", subtitle: "Nothing has been sent to the printer.", body: `<div class="audit-list">${measured.map(item => `<p>${esc(item)}</p>`).join("")}</div><p>Choose a larger paper size, reduce the number of cards, turn off larger pupil text, or split the material into another format.</p>`, footer: '<button class="button" data-action="close-modal">Return to Print Studio</button>' });
+      return;
+    }
+    window.print();
   }
 
   document.addEventListener("click", event => {
@@ -2150,6 +2465,7 @@
     const id = button.dataset.id;
 
     if (action === "new-scaffold") newScaffold();
+    if (action === "dismiss-recovery") { state.recoveryNoticeDismissed = true; render(); }
     if (action === "quick-start") {
       const presets = {
         explain: { situation: "Pupils appear to understand the idea, but struggle to explain the connection clearly or justify why it works." },
@@ -2359,11 +2675,25 @@
     if (action === "ai-import-plain") structureAIImport("plain");
     if (action === "ai-manual-import") structureAIImport("manual");
     if (action === "ai-clear-import") {
+      state.aiWorkspace.importRecovery = { rawImport: state.aiWorkspace.rawImport, parsed: state.aiWorkspace.parsed, verification: state.aiWorkspace.verification, rawPreservedAt: state.aiWorkspace.rawPreservedAt, savedAt: new Date().toISOString() };
       state.aiWorkspace.rawImport = "";
       state.aiWorkspace.parsed = null;
       state.aiWorkspace.verification = null;
       state.aiWorkspace.rawPreservedAt = null;
+      if (!(state.aiWorkspace.rounds || []).length) updateAIResourceStatus("local-draft");
       saveAIWorkspace();
+      render();
+    }
+    if (action === "ai-restore-import" && state.aiWorkspace.importRecovery) {
+      const recovery = state.aiWorkspace.importRecovery;
+      state.aiWorkspace.rawImport = recovery.rawImport || "";
+      state.aiWorkspace.parsed = recovery.parsed || null;
+      state.aiWorkspace.verification = recovery.verification || null;
+      state.aiWorkspace.rawPreservedAt = recovery.rawPreservedAt || recovery.savedAt;
+      state.aiWorkspace.importRecovery = null;
+      updateAIResourceStatus(state.aiWorkspace.parsed ? "review-required" : "response-imported");
+      saveAIWorkspace();
+      toast("Previous imported response restored.");
       render();
     }
     if (action === "ai-item-decision") {
@@ -2478,6 +2808,11 @@
     if (action === "restore-version") restoreVersion(button.dataset.parent, id, false);
     if (action === "duplicate-version") restoreVersion(button.dataset.parent, id, true);
     if (action === "delete-scaffold") deleteScaffold(id);
+    if (action === "recently-deleted") showRecentlyDeleted();
+    if (action === "restore-deleted") restoreDeleted(id);
+    if (action === "purge-deleted") purgeDeleted(id);
+    if (action === "recovery-checkpoints") showRecoveryCheckpoints();
+    if (action === "restore-recovery") restoreRecoveryCheckpoint(id);
     if (action === "toggle-favourite") {
       const item = state.library.find(scaffold => scaffold.id === id);
       if (item) {
@@ -2493,18 +2828,22 @@
     }
     if (action === "clear-library-filters") {
       state.libraryFilters = { query: "", year: "all", subject: "all", family: "all", format: "all", stage: "all", aiStatus: "all", source: "all", favourite: false, archived: state.libraryFilters.archived, sort: "edited" };
+      state.libraryVisible = 60;
       render();
     }
+    if (action === "library-more") { state.libraryVisible += 60; render(); }
     if (action === "library-view") {
       state.libraryFilters.archived = id === "archived";
       state.libraryFilters.query = "";
       state.librarySelection = [];
+      state.libraryVisible = 60;
       render();
     }
     if (action === "batch-clear") { state.librarySelection = []; render(); }
     if (action === "batch-export") {
       const resources = state.library.filter(item => state.librarySelection.includes(item.id)).map(item => AI.portableResource(item, { excludeHistory: !state.settings.aiIncludeResponseHistory }).resource);
-      downloadText(`scaffold-seeds-selected-${new Date().toISOString().slice(0, 10)}.json`, JSON.stringify({ product: "Scaffold Seeds", schemaVersion: 4, exportedAt: new Date().toISOString(), resources }, null, 2), "application/json");
+      const bundle = PERSISTENCE.createBundle({ product: "Scaffold Seeds", schemaVersion: 5, exportedAt: new Date().toISOString(), resources });
+      downloadText(`scaffold-seeds-selected-${new Date().toISOString().slice(0, 10)}.json`, JSON.stringify(bundle, null, 2), "application/json");
       toast(`${resources.length} selected resource${resources.length === 1 ? "" : "s"} exported.`);
     }
     if (action === "batch-reviewed") {
@@ -2541,13 +2880,19 @@
     if (action === "choose-print-format") showPrintFormats();
     if (action === "select-print-format") {
       state.print.format = id;
-      if (id === "a5-sheet") state.print.paper = "a5";
+      const selected = printFormatById(id);
+      const rule = selected.release || DATA.build5?.formatRules?.[id];
+      if (rule?.safePaper?.length && !rule.safePaper.includes(state.print.paper)) state.print.paper = rule.safePaper[0];
+      if (rule?.preferredOrientation) state.print.orientation = rule.preferredOrientation;
+      state.print.arrangement = ["cut-cards", "mini-card", "vocabulary-card"].includes(id) ? "6" : "single";
+      state.print.cropMarks = ["display-poster", "cut-cards", "mini-card", "vocabulary-card"].includes(id) && state.print.cropMarks;
+      state.print.cutLines = Boolean(rule?.cuttable);
       closeModal();
       render();
     }
     if (action === "copy-question") {
       const question = button.dataset.question || button.textContent.trim();
-      navigator.clipboard?.writeText(question).then(() => toast("Teacher question copied."), () => toast("Select and copy the question from the screen."));
+      copyText(question, "Teacher question copied.");
     }
     if (action === "move-print-stage") {
       const currentIndex = state.print.stages.indexOf(id);
@@ -2560,6 +2905,7 @@
     }
     if (action === "print-now") printNow();
     if (action === "export-data") exportData();
+    if (action === "commit-import") commitImport(button.dataset.mode);
     if (action === "clear-data") clearData();
     if (action === "close-modal") closeModal();
   });
@@ -2575,7 +2921,7 @@
     }
     const aiRaw = event.target.closest("[data-ai-raw-import]");
     if (aiRaw) {
-      state.aiWorkspace.rawImport = aiRaw.value;
+      state.aiWorkspace.rawImport = aiRaw.value.slice(0, 65000);
       state.aiWorkspace.parsed = null;
       state.aiWorkspace.verification = null;
       scheduleAIWorkspaceSave();
@@ -2608,6 +2954,18 @@
       const record = (state.aiWorkspace.sourceRecords || []).find(item => item.id === aiSourceField.dataset.sourceId);
       if (record) record[aiSourceField.dataset.aiSourceField] = aiSourceField.value.slice(0, 800);
       scheduleAIWorkspaceSave();
+      return;
+    }
+    const diagramField = event.target.closest("[data-diagram-field]");
+    if (diagramField) {
+      const key = diagramField.dataset.diagramField;
+      const value = diagramField.dataset.listMode === "numbers"
+        ? diagramField.value.split(/[,\n]/).map(item => Number(item.trim())).filter(Number.isFinite).slice(0, 24)
+        : ["parts", "numerator", "rows", "columns", "total"].includes(key) && diagramField.value !== "" ? Number(diagramField.value) : diagramField.value;
+      state.draft.diagram = { ...(state.draft.diagram || {}), [key]: value };
+      saveDraft();
+      const preview = document.getElementById("live-resource-preview");
+      if (preview) preview.innerHTML = renderResourceDocument({ ...scaffoldFromDraft(), content: state.draft.content, diagram: { ...state.draft.diagram, type: state.draft.content.diagramType, labels: state.draft.content.diagramLabels } });
       return;
     }
     const contentField = event.target.closest("[data-content-field]");
@@ -2648,11 +3006,16 @@
     const filter = event.target.closest("[data-library-filter='query']");
     if (filter) {
       state.libraryFilters.query = filter.value;
-      const selection = filter.selectionStart;
-      render();
-      const refreshed = document.getElementById("library-search");
-      refreshed?.focus();
-      refreshed?.setSelectionRange(selection, selection);
+      state.libraryVisible = 60;
+      clearTimeout(librarySearchTimer);
+      librarySearchTimer = setTimeout(() => {
+        if (state.view !== "library") return;
+        const selection = filter.selectionStart;
+        render();
+        const refreshed = document.getElementById("library-search");
+        refreshed?.focus();
+        refreshed?.setSelectionRange(selection, selection);
+      }, 140);
     }
   });
 
@@ -2700,7 +3063,11 @@
     const aiApprovalScope = event.target.closest("[data-ai-approval-scope]");
     if (aiApprovalScope) { state.aiWorkspace.approvalScope = aiApprovalScope.value; saveAIWorkspace(); return; }
     const aiImageField = event.target.closest("[data-ai-image-field]");
-    if (aiImageField && state.aiWorkspace.image) { state.aiWorkspace.image[aiImageField.dataset.aiImageField] = aiImageField.value; saveAIWorkspace(); render(); return; }
+    if (aiImageField && state.aiWorkspace.image) {
+      const key = aiImageField.dataset.aiImageField;
+      state.aiWorkspace.image[key] = key === "fit" ? (["contain", "cover"].includes(aiImageField.value) ? aiImageField.value : "contain") : aiImageField.value.slice(0, 500);
+      saveAIWorkspace(); render(); return;
+    }
     const aiSourceField = event.target.closest("[data-ai-source-field]");
     if (aiSourceField) {
       const record = (state.aiWorkspace.sourceRecords || []).find(item => item.id === aiSourceField.dataset.sourceId);
@@ -2713,14 +3080,17 @@
       const file = aiImageFile.files?.[0];
       if (!file) return;
       if (!/^image\/(png|jpeg|webp)$/.test(file.type) || file.size > 2500000) { toast("Choose a PNG, JPEG or WebP under 2.5 MB."); return; }
+      const targetWorkspace = state.aiWorkspace;
+      const targetResourceId = targetWorkspace.resourceId;
       const reader = new FileReader();
       reader.onload = () => {
         const image = new Image();
         image.onload = () => {
-          state.aiWorkspace.image = { id: uid(), name: file.name.slice(0, 120), type: file.type, bytes: file.size, dataUrl: reader.result, width: image.naturalWidth, height: image.naturalHeight, rotation: 0, fit: "contain", caption: "", alt: "", greyscale: false, storedLocally: true, analysis: analyseLocalImage(image) };
-          saveAIWorkspace();
+          targetWorkspace.image = normaliseLocalImage({ id: uid(), name: file.name.slice(0, 120), type: file.type, bytes: file.size, dataUrl: reader.result, width: image.naturalWidth, height: image.naturalHeight, rotation: 0, fit: "contain", caption: "", alt: "", greyscale: false, storedLocally: true, analysis: analyseLocalImage(image) });
+          if (state.aiWorkspace === targetWorkspace) saveAIWorkspace();
+          else if (targetResourceId) writeStore(`${STORAGE.aiWorkspace}.${targetResourceId}`, targetWorkspace);
           toast(file.size > 850000 ? "Image loaded locally. Its size may limit how many versions the browser can store." : "Image loaded locally. Add a caption and alt text before use.");
-          render();
+          if (state.aiWorkspace === targetWorkspace) render();
         };
         image.onerror = () => toast("That image could not be previewed.");
         image.src = reader.result;
@@ -2786,6 +3156,7 @@
     const libraryFilter = event.target.closest("[data-library-filter]");
     if (libraryFilter && libraryFilter.dataset.libraryFilter !== "query") {
       state.libraryFilters[libraryFilter.dataset.libraryFilter] = libraryFilter.value;
+      state.libraryVisible = 60;
       render();
     }
     const settingSelect = event.target.closest("[data-setting-select]");
@@ -2821,18 +3192,41 @@
     if (event.target === modalLayer) closeModal();
   });
 
-  document.getElementById("menu-button").addEventListener("click", () => sidebar.classList.contains("is-open") ? closeSidebar() : openSidebar());
+  menuButton.addEventListener("click", () => sidebar.classList.contains("is-open") ? closeSidebar() : openSidebar());
   scrim.addEventListener("click", closeSidebar);
   document.addEventListener("keydown", event => {
+    const tab = event.target.closest?.('[role="tab"]');
+    if (tab && ["ArrowRight", "ArrowDown", "ArrowLeft", "ArrowUp", "Home", "End"].includes(event.key)) {
+      const tabs = [...tab.closest('[role="tablist"]')?.querySelectorAll('[role="tab"]') || []];
+      if (tabs.length) {
+        event.preventDefault();
+        const current = tabs.indexOf(tab);
+        const next = event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1 : (current + (["ArrowRight", "ArrowDown"].includes(event.key) ? 1 : -1) + tabs.length) % tabs.length;
+        tabs[next].focus();
+        tabs[next].click();
+      }
+    }
+    if (event.key === "Tab" && !modalLayer.hidden) {
+      const focusable = [...modalLayer.querySelectorAll('button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])')].filter(item => !item.hidden && item.getClientRects().length);
+      if (focusable.length) {
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+        else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+      }
+    }
     if (event.key === "Escape") {
       if (!modalLayer.hidden) closeModal();
       else closeSidebar();
     }
   });
   window.addEventListener("pagehide", () => { if (state.aiWorkspace) saveAIWorkspace(); saveDraft(); });
+  window.addEventListener("afterprint", () => { const root = document.getElementById("print-root"); if (root) root.innerHTML = ""; });
   document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") { if (state.aiWorkspace) saveAIWorkspace(); saveDraft(); } });
 
   applySettings();
   hydrateIcons(document);
   render();
+  initialisePersistence();
+  if ("serviceWorker" in navigator && location.protocol !== "file:") navigator.serviceWorker.register("./sw.js").catch(() => undefined);
 })();

@@ -95,7 +95,7 @@
 
   function createWorkspace(scaffold, saved = null) {
     const base = {
-      schemaVersion: 4,
+      schemaVersion: 5,
       id: uid("aiw"),
       resourceId: scaffold?.id || "",
       phase: "task",
@@ -121,7 +121,7 @@
       ...base,
       ...saved,
       options: { ...base.options, ...(saved.options || {}) },
-      schemaVersion: 4,
+      schemaVersion: 5,
       lastSavedAt: new Date().toISOString()
     };
   }
@@ -564,6 +564,8 @@
   function applyAccepted(scaffold, parsed, details = {}) {
     const next = clone(RESOURCE.normalise(scaffold));
     const accepted = acceptedContent(parsed);
+    const acceptedCount = Object.values(accepted).reduce((total, items) => total + items.length, 0);
+    const hasPendingDecision = (parsed?.sections || []).some(section => (section.items || []).some(item => item.status === "pending"));
     next.content = { ...(next.content || {}) };
     const changedPaths = [];
     const set = (path, value) => { changedPaths.push(path); return value; };
@@ -589,6 +591,8 @@
     if (accepted["change-notes"]?.length) next.ai.changeNotes = set("ai.changeNotes", accepted["change-notes"].slice(0, 20));
 
     const verification = details.verification || null;
+    const blocking = verification?.blocking || 0;
+    const approvalValid = Boolean(details.approved && verification && !blocking && !hasPendingDecision && acceptedCount > 0);
     const round = {
       id: uid("round"),
       name: details.roundName || details.prompt?.taskName || "AI enhancement",
@@ -602,20 +606,19 @@
       decisions: parsed.sections.flatMap(section => section.items.map(item => ({ sectionId: section.id, itemId: item.id, status: item.status, finalText: item.editedText ?? item.text }))),
       findings: verification?.findings || [],
       appliedPaths: changedPaths,
-      approved: Boolean(details.approved),
+      approved: approvalValid,
       approvalScope: details.approvalScope || "resource",
       createdAt: new Date().toISOString()
     };
-    const blocking = verification?.blocking || 0;
-    next.ai.schemaVersion = 4;
+    next.ai.schemaVersion = 5;
     next.ai.rounds = [round, ...(next.ai.rounds || [])].slice(0, 20);
     next.ai.provenance = [
       ...changedPaths.map(path => ({ id: uid("prov"), path, origin: "external AI", roundId: round.id, teacherEdited: parsed.sections.some(section => section.items.some(item => item.status === "edited")), acceptedAt: round.createdAt })),
       ...(next.ai.provenance || [])
     ].slice(0, 100);
     next.ai.lastVerification = verification;
-    next.ai.status = details.approved && !blocking ? "teacher-approved" : blocking ? "warnings-unresolved" : "review-required";
-    next.ai.approval = details.approved ? { text: DATA.ai.approvalText, scope: details.approvalScope || "resource", approvedAt: new Date().toISOString() } : null;
+    next.ai.status = approvalValid ? "teacher-approved" : blocking ? "warnings-unresolved" : "review-required";
+    next.ai.approval = approvalValid ? { text: DATA.ai.approvalText, scope: details.approvalScope || "resource", approvedAt: new Date().toISOString() } : null;
     next.updatedAt = new Date().toISOString();
     return { resource: next, changedPaths, round, accepted };
   }
@@ -718,7 +721,7 @@
   function portableResource(resource, options = {}) {
     const copy = clone(resource);
     if (options.excludeHistory && copy.ai) copy.ai.rounds = (copy.ai.rounds || []).map(round => ({ ...round, rawResponse: "" }));
-    return { product: "Scaffold Seeds", schemaVersion: 4, exportedAt: new Date().toISOString(), resource: copy };
+    return { product: "Scaffold Seeds", schemaVersion: 5, exportedAt: new Date().toISOString(), resource: copy };
   }
 
   function verificationReport(scaffold, result) {

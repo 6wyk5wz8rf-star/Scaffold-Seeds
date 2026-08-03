@@ -9,10 +9,10 @@
   const words = text => String(text || "").trim().split(/\s+/).filter(Boolean);
 
   const stageRules = {
-    seed: { prompts: 4, words: 6, example: "modelled", response: 3, instruction: "explicit" },
-    sprout: { prompts: 3, words: 5, example: "partial", response: 4, instruction: "guided" },
-    growth: { prompts: 2, words: 3, example: "none", response: 5, instruction: "strategic" },
-    independent: { prompts: 1, words: 0, example: "none", response: 6, instruction: "self" }
+    seed: { supports: 3, words: 6, example: "modelled", response: 3, instruction: "explicit" },
+    sprout: { supports: 2, words: 4, example: "partial", response: 4, instruction: "guided" },
+    growth: { supports: 1, words: 2, example: "none", response: 5, instruction: "strategic" },
+    independent: { supports: 0, words: 0, example: "none", response: 6, instruction: "self" }
   };
 
   const subjectActions = {
@@ -35,10 +35,6 @@
     return DATA.engines.find(item => item.id === id) || DATA.engines[0];
   }
 
-  function stageById(id) {
-    return DATA.stages.find(item => item.id === id) || DATA.stages[1];
-  }
-
   function subjectById(id) {
     return DATA.subjects.find(item => item.id === id) || DATA.subjects[0];
   }
@@ -56,6 +52,39 @@
       profile, index,
       score: (profile.keywords || []).reduce((total, keyword) => total + (source.includes(keyword) ? 2 : 0), 0)
     })).sort((a, b) => b.score - a.score || a.index - b.index)[0]?.profile || brain.profiles[0];
+  }
+
+  function coreTaskFor(scaffold, content = scaffold.content || {}) {
+    const engine = engineById(scaffold.engineId);
+    const declared = String(content.coreTask || scaffold.coreTask || engine.coreTask || "").trim();
+    if (declared) return declared;
+    const enginePrompts = Array.isArray(engine.prompts) ? engine.prompts.filter(Boolean) : [];
+    return String(enginePrompts[enginePrompts.length - 1] || content.independencePrompt || scaffold.essentialThinking || "Make and justify the central subject decision.").trim();
+  }
+
+  function stagePromptSet(rawScaffold, contentOverride = null) {
+    const scaffold = contentOverride ? { ...rawScaffold, content: contentOverride } : rawScaffold;
+    const content = scaffold.content || {};
+    const rule = stageRules[scaffold.stage] || stageRules.sprout;
+    const coreTask = coreTaskFor(scaffold, content);
+    if (scaffold.stage === "independent") return [coreTask].filter(Boolean);
+    const prompts = Array.isArray(content.prompts) ? content.prompts.filter(Boolean) : [];
+    const supports = prompts.filter(prompt => prompt !== coreTask).slice(0, rule.supports);
+    return unique([...supports, coreTask]);
+  }
+
+  function supportProfile(rawScaffold) {
+    const scaffold = normalise(rawScaffold);
+    const rule = stageRules[scaffold.stage] || stageRules.sprout;
+    return {
+      stage: scaffold.stage,
+      coreTask: coreTaskFor(scaffold, scaffold.content),
+      visiblePrompts: stagePromptSet(scaffold, scaffold.content),
+      supportPromptCount: scaffold.stage === "independent" ? 0 : Math.max(0, stagePromptSet(scaffold, scaffold.content).length - 1),
+      vocabularyCount: Math.min(rule.words, scaffold.content.vocabulary.length),
+      example: rule.example,
+      oralRehearsal: scaffold.stage !== "independent" && Boolean(scaffold.content.oralRehearsal)
+    };
   }
 
   function defaultContent(scaffold) {
@@ -78,6 +107,7 @@
       subInstruction: actions[1],
       example: exampleBase,
       prompts,
+      coreTask: coreTaskFor(scaffold, { prompts }),
       vocabulary,
       misconception: scaffold.misconception || profile.misconceptions?.[0] || "",
       teacherNotes: scaffold.teacherNotes || "",
@@ -99,6 +129,7 @@
     const content = { ...defaults, ...(scaffold.content || {}) };
     content.prompts = Array.isArray(content.prompts) ? content.prompts : String(content.prompts || "").split("\n").filter(Boolean);
     content.vocabulary = Array.isArray(content.vocabulary) ? content.vocabulary : String(content.vocabulary || "").split(/[,\n]/).map(item => item.trim()).filter(Boolean);
+    content.coreTask = coreTaskFor(scaffold, content);
     return { ...scaffold, content };
   }
 
@@ -125,9 +156,10 @@
 
   function diagramValidation(type, config = {}) {
     const errors = [];
+    const warnings = [];
     const values = (config.values || []).map(Number).filter(Number.isFinite);
     const labels = config.labels || [];
-    if (!type) return { valid: true, errors };
+    if (!type) return { valid: true, errors, warnings, status: "not-needed" };
     if (["number-line", "timeline"].includes(type) && values.length > 1) {
       for (let index = 1; index < values.length; index += 1) {
         if (values[index] < values[index - 1]) errors.push("Values must be ordered from left to right.");
@@ -137,24 +169,53 @@
       const interval = values[1] - values[0];
       if (!values.slice(2).every((value, index) => Math.abs(value - values[index + 1] - interval) < 0.00001)) errors.push("Number-line intervals are inconsistent.");
     }
-    if (type === "fraction-strip" && config.parts && Number(config.parts) < 2) errors.push("A fraction strip needs at least two equal parts.");
-    if (type === "bar-model" && values.length && values.some(value => value < 0)) errors.push("Bar lengths cannot represent negative quantities.");
+    if (type === "number-line" && values.length === 1) errors.push("A number line needs at least two located values.");
+    if (type === "number-line" && values.length === 0) warnings.push("No located values were supplied, so this number line is a schematic template.");
+    if (type === "fraction-strip") {
+      const parts = Number(config.parts);
+      const numerator = Number(config.numerator);
+      if (config.parts && (!Number.isInteger(parts) || parts < 2 || parts > 24)) errors.push("A fraction strip needs between two and twenty-four equal parts.");
+      if (config.numerator !== undefined && (!Number.isInteger(numerator) || numerator < 0 || numerator > parts)) errors.push("The shaded numerator must be a whole number between zero and the denominator.");
+      if (config.parts === undefined || config.numerator === undefined) warnings.push("Supply a denominator and numerator before treating the fraction strip as value-checked.");
+    }
+    if (type === "bar-model") {
+      if (values.some(value => value <= 0)) errors.push("Bar parts must use positive quantities.");
+      if (values.length && labels.length && ![values.length, values.length + 1].includes(labels.length)) errors.push("Bar labels and numerical parts do not correspond.");
+      if (Number.isFinite(Number(config.total)) && values.length && Math.abs(values.reduce((sum, value) => sum + value, 0) - Number(config.total)) > 0.00001) errors.push("Bar parts do not add to the stated whole.");
+      if (!values.length) warnings.push("No bar values were supplied, so this is a schematic relationship rather than a scale-validated model.");
+    }
+    if (type === "part-whole") {
+      if (values.length >= 3 && Math.abs(values[0] - values.slice(1).reduce((sum, value) => sum + value, 0)) > 0.00001) errors.push("The parts do not combine to the stated whole.");
+      if (values.length > 0 && values.length < 3) errors.push("A checked part-whole model needs a whole and at least two parts.");
+      if (!values.length) warnings.push("No quantities were supplied, so the part-whole model is schematic.");
+    }
+    if (type === "array") {
+      const rows = Number(config.rows);
+      const columns = Number(config.columns);
+      if (config.rows && (!Number.isInteger(rows) || rows < 1)) errors.push("Array rows must be a positive whole number.");
+      if (config.columns && (!Number.isInteger(columns) || columns < 1)) errors.push("Array columns must be a positive whole number.");
+      if (Number.isFinite(Number(config.total)) && rows * columns !== Number(config.total)) errors.push("Array rows and columns do not match the stated total.");
+      if (config.rows === undefined || config.columns === undefined || config.total === undefined) warnings.push("Supply rows, columns and total before treating the array as relationship-checked.");
+    }
+    if (type === "timeline" && (!values.length || values.length !== labels.length)) warnings.push("Timeline spacing is schematic until every event has a corresponding value.");
+    if (type === "place-value" && !Number.isFinite(Number(config.value))) warnings.push("No represented number was supplied, so this place-value chart is an unvalidated template.");
     if (["flowchart", "classification-tree", "causal-chain"].includes(type) && labels.length < 2) errors.push("Add at least two labelled steps or nodes.");
-    return { valid: errors.length === 0, errors };
+    if (labels.some(label => String(label).length > 44)) warnings.push("One or more diagram labels are too long for a clear print layout.");
+    return { valid: errors.length === 0, errors, warnings, status: errors.length ? "invalid" : warnings.length ? "schematic-review" : "locally-checked" };
   }
 
   function renderDiagram(type, config = {}) {
     const safe = diagramValidation(type, config);
     const labels = (config.labels || []).map(String).filter(Boolean);
     const values = (config.values || []).map(Number).filter(Number.isFinite);
-    const label = text => esc(text || "Add label");
+    const label = text => esc(String(text || "Add label").length > 32 ? `${String(text).slice(0, 29).trim()}…` : text || "Add label");
     if (!type) return "";
     if (!safe.valid) return `<div class="diagram-warning"><strong>Diagram needs review</strong><span>${esc(safe.errors.join(" "))}</span></div>`;
     if (type === "number-line") {
       const marks = values.length ? values : [0, 1, 2, 3, 4];
       return `<svg class="local-diagram" viewBox="0 0 640 150" role="img" aria-label="Editable number line"><path d="M52 70H588M52 70l16-9M52 70l16 9M588 70l-16-9M588 70l-16 9"/>${marks.map((value, index) => { const x = 80 + index * (480 / Math.max(1, marks.length - 1)); return `<path d="M${x} 54v32"/><text x="${x}" y="112">${label(value)}</text>`; }).join("")}</svg>`;
     }
-    if (type === "part-whole") return `<svg class="local-diagram" viewBox="0 0 640 230" role="img" aria-label="Part whole model"><circle cx="320" cy="62" r="48"/><text x="320" y="67">${label(labels[0] || "whole")}</text><path d="M288 100 220 154M352 100l68 54"/><circle cx="205" cy="177" r="48"/><circle cx="435" cy="177" r="48"/><text x="205" y="182">${label(labels[1] || "part")}</text><text x="435" y="182">${label(labels[2] || "?")}</text></svg>`;
+    if (type === "part-whole") return `<svg class="local-diagram" viewBox="0 0 640 230" role="img" aria-label="Part whole model"><title>${esc(safe.warnings.length ? safe.warnings.join(" ") : "A whole connected to two parts")}</title><circle cx="320" cy="62" r="48"/><text x="320" y="67">${label(labels[0] || values[0] || "whole")}</text><path d="M288 100 220 154M352 100l68 54"/><circle cx="205" cy="177" r="48"/><circle cx="435" cy="177" r="48"/><text x="205" y="182">${label(labels[1] || values[1] || "part")}</text><text x="435" y="182">${label(labels[2] || values[2] || "?")}</text></svg>`;
     if (type === "place-value") {
       const heads = labels.length ? labels.slice(0, 5) : ["10,000", "1,000", "100", "10", "1"];
       return `<svg class="local-diagram" viewBox="0 0 640 210" role="img" aria-label="Place value chart">${heads.map((head, index) => `<rect x="${20 + index * 120}" y="30" width="116" height="150"/><text x="${78 + index * 120}" y="62">${label(head)}</text><path d="M${20 + index * 120} 78h116"/>`).join("")}</svg>`;
@@ -165,16 +226,30 @@
       return `<svg class="local-diagram" viewBox="0 0 640 230" role="img" aria-label="Array model">${Array.from({ length: rows * columns }, (_, index) => `<circle cx="${160 + (index % columns) * 64}" cy="${48 + Math.floor(index / columns) * 48}" r="13"/>`).join("")}</svg>`;
     }
     if (type === "bar-model") {
-      const parts = labels.length ? labels.slice(0, 4) : ["known", "known", "?"];
-      return `<svg class="local-diagram" viewBox="0 0 640 210" role="img" aria-label="Bar model"><rect x="60" y="50" width="520" height="78"/>${parts.map((part, index) => { const width = 520 / parts.length; return `<path d="M${60 + index * width} 50v78"/><text x="${60 + (index + .5) * width}" y="94">${label(part)}</text>`; }).join("")}<path d="M60 155v18M60 164h520M580 155v18"/><text x="320" y="198">${label(labels[4] || "whole or comparison")}</text></svg>`;
+      const partCount = Math.max(values.length, Math.min(labels.length, 4), 3);
+      const parts = Array.from({ length: partCount }, (_, index) => labels[index] || (values[index] ?? (index === partCount - 1 ? "?" : "known")));
+      const weights = values.length === partCount ? values : Array(partCount).fill(1);
+      const total = weights.reduce((sum, value) => sum + value, 0) || partCount;
+      let cursor = 60;
+      const segments = parts.map((part, index) => {
+        const width = 520 * weights[index] / total;
+        const segment = `<path d="M${cursor} 50v78"/><text x="${cursor + width / 2}" y="94">${label(part)}</text>`;
+        cursor += width;
+        return segment;
+      }).join("");
+      return `<svg class="local-diagram" viewBox="0 0 640 210" role="img" aria-label="${values.length ? "Value-aware bar model" : "Schematic bar model requiring teacher confirmation"}"><title>${esc(values.length ? "Bar widths correspond to the supplied positive quantities." : safe.warnings.join(" "))}</title><rect x="60" y="50" width="520" height="78"/>${segments}<path d="M580 50v78M60 155v18M60 164h520M580 155v18"/><text x="320" y="198">${label(labels[partCount] || config.total || "whole or comparison")}</text></svg>`;
     }
     if (type === "fraction-strip") {
       const parts = Math.max(2, Math.min(12, Number(config.parts) || 4));
-      return `<svg class="local-diagram" viewBox="0 0 640 210" role="img" aria-label="Fraction strips">${[2, parts].map((partCount, row) => `<rect x="45" y="${45 + row * 80}" width="550" height="48"/>${Array.from({ length: partCount - 1 }, (_, index) => `<path d="M${45 + (index + 1) * 550 / partCount} ${45 + row * 80}v48"/>`).join("")}`).join("")}</svg>`;
+      const numerator = Math.max(0, Math.min(parts, Number(config.numerator) || 0));
+      return `<svg class="local-diagram" viewBox="0 0 640 210" role="img" aria-label="Fraction strip divided into ${parts} equal parts with ${numerator} shaded"><title>${numerator}/${parts}</title><rect x="45" y="85" width="550" height="48"/>${Array.from({ length: parts }, (_, index) => `<rect class="${index < numerator ? "diagram-shade" : "diagram-clear"}" x="${45 + index * 550 / parts}" y="85" width="${550 / parts}" height="48"/>${index ? `<path d="M${45 + index * 550 / parts} 85v48"/>` : ""}`).join("")}<text x="320" y="165">${label(`${numerator}/${parts}`)}</text></svg>`;
     }
     if (type === "timeline") {
       const events = labels.length ? labels.slice(0, 5) : ["Earlier", "Event", "Turning point", "Later"];
-      return `<svg class="local-diagram" viewBox="0 0 640 210" role="img" aria-label="Timeline marked as not to scale"><path d="M55 105H585"/><text x="55" y="28">Not to scale unless dates are proportionally spaced</text>${events.map((event, index) => { const x = 80 + index * 480 / Math.max(1, events.length - 1); return `<circle cx="${x}" cy="105" r="9"/><path d="M${x} 105v${index % 2 ? 45 : -45}"/><text x="${x}" y="${index % 2 ? 180 : 48}">${label(event)}</text>`; }).join("")}</svg>`;
+      const proportional = values.length === events.length && Math.max(...values) !== Math.min(...values);
+      const minimum = proportional ? Math.min(...values) : 0;
+      const span = proportional ? Math.max(...values) - minimum : 1;
+      return `<svg class="local-diagram" viewBox="0 0 640 210" role="img" aria-label="Timeline ${proportional ? "with proportionally spaced supplied values" : "marked as schematic and not to scale"}"><path d="M55 105H585"/><text x="55" y="28">${proportional ? "Spacing follows supplied values" : "Schematic · not to scale"}</text>${events.map((event, index) => { const x = proportional ? 80 + (values[index] - minimum) / span * 480 : 80 + index * 480 / Math.max(1, events.length - 1); return `<circle cx="${x}" cy="105" r="9"/><path d="M${x} 105v${index % 2 ? 45 : -45}"/><text x="${x}" y="${index % 2 ? 180 : 48}">${label(event)}</text>`; }).join("")}</svg>`;
     }
     if (["flowchart", "causal-chain", "cycle"].includes(type)) {
       const nodes = labels.length ? labels.slice(0, 5) : ["Start", "Decision", "Action", "Check"];
@@ -189,7 +264,8 @@
 
   function renderIndependent(scaffold) {
     const content = scaffold.content;
-    return `<div class="independent-resource"><span class="independence-mark">Support removed</span><h2>${esc(scaffold.objective)}</h2><section><strong>Before you begin</strong><p>${esc(content.independencePrompt)}</p></section><section><strong>Afterwards</strong><p>What did you decide for yourself? What evidence shows the learning?</p>${lines(5)}</section></div>`;
+    const coreTask = coreTaskFor(scaffold, content);
+    return `<div class="independent-resource"><span class="independence-mark">External support removed</span><h2>${esc(scaffold.objective)}</h2><section><strong>Your decision</strong><p>${esc(coreTask)}</p></section><section><strong>Before you begin</strong><p>${esc(content.independencePrompt)}</p></section><section><strong>Afterwards</strong><p>What did you decide for yourself? What evidence shows the learning?</p>${lines(5)}</section></div>`;
   }
 
   function renderBody(rawScaffold) {
@@ -198,7 +274,8 @@
     const content = scaffold.content;
     const rule = stageRules[scaffold.stage] || stageRules.sprout;
     if (scaffold.stage === "independent") return renderIndependent(scaffold);
-    const prompts = content.prompts.slice(0, rule.prompts);
+    const prompts = stagePromptSet(scaffold, content);
+    const coreTask = coreTaskFor(scaffold, content);
     const vocabulary = content.vocabulary.slice(0, rule.words);
     const diagram = content.diagramType ? `<div class="engine-diagram">${renderDiagram(content.diagramType, scaffold.diagram || { labels: content.diagramLabels })}</div>` : "";
     const example = rule.example === "none" || content.hiddenSections.includes("example") ? "" : section(rule.example === "modelled" ? "Study one modelled decision" : "Complete the missing decision", `<p>${esc(content.example)}</p>${rule.example === "partial" ? lines(2) : ""}`, "engine-example");
@@ -220,16 +297,18 @@
     else if (["math-model", "source", "phrase-strip", "locator", "noticer", "lens", "challenge", "scenario", "primer", "shrinker"].includes(layout)) core = `${diagram || `<div class="engine-stimulus"><span>${layout === "source" ? "Source, text or stimulus" : "Working space"}</span><p>${esc(content.example)}</p></div>`}${promptCards(prompts, layout)}`;
     else core = `${diagram}${promptCards(prompts, layout)}`;
 
-    return `${intro}${example}${core}${oral}${check}<div class="engine-fade-note"><strong>Next fade</strong><span>${esc(nextFade(scaffold))}</span></div>`;
+    const protectedDecision = `<section class="engine-core-task"><span>Your subject decision</span><strong>${esc(coreTask)}</strong><small>This remains yours at every growth stage.</small></section>`;
+    return `${intro}${example}${core}${protectedDecision}${oral}${check}<div class="engine-fade-note"><strong>Next fade</strong><span>${esc(nextFade(scaffold))}</span></div>`;
   }
 
   function nextFade(scaffold) {
     const index = DATA.stages.findIndex(stage => stage.id === scaffold.stage);
     const next = DATA.stages[index + 1];
     if (!next) return "Remove the page. Keep only one pupil-owned self-prompt.";
-    if (next.id === "sprout") return "Replace the modelled example with a partial example and remove one prompt.";
-    if (next.id === "growth") return "Remove the example and retain only two strategic questions.";
-    return "Remove the organiser. Keep the learning focus and one self-monitoring question.";
+    const engine = engineById(scaffold.engineId);
+    if (next.id === "sprout") return scaffold.removalPathway || engine.release?.removeFirst || "Replace the modelled example with a partial example and remove the least essential prompt.";
+    if (next.id === "growth") return `Remove the example and one more support cue. Keep the core pupil decision: ${coreTaskFor(scaffold)}.`;
+    return `Remove the organiser. Keep the learning objective and let the pupil own this decision: ${coreTaskFor(scaffold)}.`;
   }
 
   function validationIssues(rawScaffold) {
@@ -245,7 +324,10 @@
     if (content.vocabulary.length > 8) issues.push({ type: "review", code: "vocabulary-load", message: "More than eight vocabulary items may increase visual and retrieval load." });
     if (/low ability|middle ability|high ability|bottom group|weak pupil|low attainer/i.test(combined)) issues.push({ type: "error", code: "fixed-label", message: "Fixed-ability language must be replaced with a temporary, observable barrier." });
     if (/the answer is|therefore the answer|copy this answer/i.test(combined)) issues.push({ type: "error", code: "answer-leak", message: "The resource may reveal the pupil's conclusion or answer." });
-    if (scaffold.stage === "independent" && (content.prompts.length > 1 || content.vocabulary.length)) issues.push({ type: "review", code: "independent", message: "Independent should contain one self-prompt and no task-completing support." });
+    const visiblePrompts = stagePromptSet(scaffold, content);
+    const coreTask = coreTaskFor(scaffold, content);
+    if (scaffold.stage !== "independent" && coreTask && !visiblePrompts.includes(coreTask)) issues.push({ type: "error", code: "core-task", message: "The growth stage has removed the engine's protected pupil decision." });
+    if (scaffold.stage === "independent" && !String(content.independencePrompt || coreTask).trim()) issues.push({ type: "review", code: "independent", message: "Independent needs one pupil-owned self-prompt without task-completing support." });
     const diagram = diagramValidation(content.diagramType, scaffold.diagram || { labels: content.diagramLabels });
     diagram.errors.forEach(message => issues.push({ type: "error", code: "diagram", message }));
     return issues;
@@ -254,22 +336,63 @@
   function qualityAudit(rawScaffold) {
     const scaffold = normalise(rawScaffold);
     const engine = engineById(scaffold.engineId);
+    const subject = subjectById(scaffold.subject);
     const issues = validationIssues(scaffold);
     const has = code => issues.some(issue => issue.code === code);
     const judgement = (label, status, reason, action = "") => ({ label, status, reason, action });
+    const entry = (subject.entries || []).find(item => item.title === scaffold.topic && (item.years || []).includes(scaffold.year));
+    const objectiveMapped = entry?.objectives?.includes(scaffold.objective);
+    const objectiveStatus = objectiveMapped ? "Strong" : entry ? "Teacher review needed" : "Not locally established";
+    const engineCompatible = (engine.subjects || []).includes(scaffold.subject) || (engine.subjects || []).includes("all");
+    const barrierFit = (engine.barriers || []).some(id => (scaffold.barriers || []).includes(id));
+    const profile = supportProfile(scaffold);
+    const stageIntegrity = profile.coreTask && (scaffold.stage === "independent" || profile.visiblePrompts.includes(profile.coreTask));
+    const representation = diagramValidation(scaffold.content.diagramType, scaffold.diagram || { labels: scaffold.content.diagramLabels });
+    const print = printPreflight(scaffold, scaffold.format || "workpage", { paper: "a4", orientation: "portrait", colour: "full-colour" });
     return [
-      judgement("Curriculum integrity", scaffold.objective ? "Strong" : "Review recommended", scaffold.objective ? "The resource is anchored to the selected objective and subject profile." : "No secure objective is available.", "Confirm the exact intended learning."),
+      judgement("Curriculum integrity", objectiveStatus, objectiveMapped ? "The objective maps to the selected year and curriculum context." : entry ? "The objective is teacher-edited, so local year alignment cannot be established automatically." : "The selected topic is not mapped locally for this subject and year.", "Confirm the exact intended learning and year alignment."),
       judgement("Barrier precision", has("barrier") ? "Review recommended" : "Strong", has("barrier") ? "The sticking point is not yet precise enough." : "The support responds to an observable point of breakdown.", "Name what pupils can do and where success stops."),
-      judgement("Intellectual ownership", has("thinking") || has("answer-leak") ? "Possible over-scaffolding" : "Strong", has("answer-leak") ? "A prompt may reveal the conclusion." : `The engine protects ${engine.preserves || "the central pupil decision"}.`, "Remove any prompt that supplies the next subject decision."),
-      judgement("Subject authenticity", "Strong", `${engine.name} uses ${subjectById(scaffold.subject).name}-responsive actions rather than a universal worksheet grid.`),
+      judgement("Intellectual ownership", has("thinking") || has("answer-leak") || has("core-task") ? "Possible over-scaffolding" : "Strong", has("answer-leak") ? "A prompt may reveal the conclusion." : has("core-task") ? "The core pupil decision disappeared during fading." : `Every visible stage retains ${engine.preserves || "the central pupil decision"}.`, "Remove task-completing support, never the protected decision."),
+      judgement("Subject authenticity", engineCompatible ? "Strong" : "Not locally established", engineCompatible ? `${engine.name} is declared for ${subject.name} and retains its disciplinary action.` : `${engine.name} is not declared as compatible with ${subject.name}.`, "Choose a subject-compatible engine or record the professional reason for overriding it."),
+      judgement("Barrier–engine fit", barrierFit ? "Strong" : "Teacher review needed", barrierFit ? "The engine directly addresses at least one selected observable barrier." : "The engine does not directly match a selected barrier in its local metadata.", "Confirm why this structure removes the named barrier better than a lighter alternative."),
       judgement("Cognitive load", has("instruction-load") || has("vocabulary-load") ? "Review recommended" : "Strong", has("instruction-load") || has("vocabulary-load") ? "Language or vocabulary density may compete with the learning." : "Directions and vocabulary are deliberately limited.", "Reduce entry language before reducing curriculum demand."),
-      judgement("Language demand", "Strong", "Instruction controls change access language without changing the objective."),
-      judgement("Representation accuracy", has("diagram") ? "Representation requires checking" : "Strong", has("diagram") ? "The selected diagram has a structural validation issue." : scaffold.content.diagramType ? "The selected local diagram passed its type-specific checks." : "No diagram is forced where one may not help.", "Correct labels, order, scale or structure before printing."),
-      judgement("Independence pathway", has("independent") ? "Fading pathway incomplete" : "Strong", has("independent") ? "Independent still contains task-completing support." : `The next removal is explicit: ${nextFade(scaffold)}`),
+      judgement("Language demand", has("instruction-load") ? "Teacher review needed" : "Strong", has("instruction-load") ? "The entry instruction may be too long to function as access support." : "The local instruction-length check found no obvious overload.", "Test the instruction aloud and shorten the entry action first."),
+      judgement("Representation accuracy", !representation.valid ? "Representation requires checking" : representation.warnings.length ? "Teacher review needed" : "Strong", !representation.valid ? representation.errors.join(" ") : representation.warnings.length ? representation.warnings.join(" ") : scaffold.content.diagramType ? "The selected diagram passed its deterministic type-specific checks." : "No diagram is forced where one may not help.", "Correct quantities, labels, order, scale or structure before printing."),
+      judgement("Independence pathway", has("independent") || !stageIntegrity ? "Fading pathway incomplete" : "Strong", has("independent") || !stageIntegrity ? "The independent self-prompt or protected decision is incomplete." : `Support decreases while the core task remains. Next: ${nextFade(scaffold)}`),
       judgement("Classroom usability", has("repeat") ? "Review recommended" : "Strong", has("repeat") ? "Repeated prompts add noise without support." : "The resource can be introduced through one modelled decision and used immediately."),
-      judgement("Print quality", "Strong", "The component layout uses fixed safe zones, bounded sections and print-specific reflow."),
-      judgement("Inclusion", has("fixed-label") ? "Review recommended" : "Strong", has("fixed-label") ? "Fixed-ability language appears in the resource." : "Support is described through access features and observable barriers, not diagnoses or attainment labels.")
+      judgement("Print fitness", print.blocking.length ? "Print review needed" : print.warnings.length ? "Teacher review needed" : "Strong", print.blocking[0] || print.warnings[0] || "The chosen format passes local content-density and paper-purpose checks.", "Use Print Studio preflight and inspect the physical printer preview."),
+      judgement("Inclusion", has("fixed-label") ? "Review recommended" : "Strong", has("fixed-label") ? "Fixed-ability language appears in the resource." : "Support is described through access features and observable barriers, not diagnoses or attainment labels."),
+      judgement("Evidence of fading", scaffold.reflection?.supportRemoved || scaffold.fadeHistory?.length ? "Strong" : "Not yet observed", scaffold.reflection?.supportRemoved ? `Recorded support removal: ${scaffold.reflection.supportRemoved}` : scaffold.fadeHistory?.length ? "A move to lighter support has been recorded." : "The pathway is designed, but classroom evidence of support disappearing has not yet been recorded.", "After use, record what pupils managed without and what should disappear next.")
     ];
+  }
+
+  function printPreflight(rawScaffold, formatId = "workpage", options = {}) {
+    const scaffold = normalise(rawScaffold);
+    const format = DATA.printFormats.find(item => item.id === formatId) || DATA.printFormats[0];
+    const rule = format.release || DATA.build5?.formatRules?.[format.id] || {};
+    const paper = String(options.paper || (format.id === "a5-sheet" ? "a5" : "a4")).toLowerCase();
+    const orientation = String(options.orientation || "portrait").toLowerCase();
+    const blocking = [];
+    const warnings = [];
+    const requestedMode = String(options.mode || "full-colour");
+    const allowedModes = new Set((DATA.build5?.printModes || []).map(mode => mode.id));
+    const mode = allowedModes.has(requestedMode) ? requestedMode : "invalid";
+    if (mode === "invalid") blocking.push(`Unknown print style: ${requestedMode}. Choose one of the seven designed output styles.`);
+    const visible = stagePromptSet(scaffold, scaffold.content);
+    const wordCount = words([scaffold.title, scaffold.objective, scaffold.content.instruction, scaffold.content.example, ...visible, ...scaffold.content.vocabulary].join(" ")).length;
+    if (rule.safePaper?.length && !rule.safePaper.includes(paper)) blocking.push(`${format.name} is not intentionally composed for ${paper.toUpperCase()}.`);
+    if (format.id === "mini-booklet" && !options.duplex) warnings.push("Mini-booklet imposition needs duplex printing and a short-edge flip.");
+    if (rule.preferredOrientation && orientation !== rule.preferredOrientation) warnings.push(`${format.name} is usually clearest in ${rule.preferredOrientation}. Inspect the preview carefully.`);
+    if (paper === "a5" && wordCount > 180) warnings.push("This A5 page is content-dense. Reduce items or use A4 rather than shrinking the type.");
+    if (["desk-strip", "mini-card", "cut-cards", "display-poster"].includes(format.id) && visible.length > 4) warnings.push("This compact format contains too many simultaneous prompts.");
+    if (scaffold.content.vocabulary.length > (paper === "a5" ? 4 : 6)) warnings.push("Move surplus vocabulary to teacher guidance or a separate vocabulary-card page.");
+    if (scaffold.content.diagramType) {
+      const diagram = diagramValidation(scaffold.content.diagramType, scaffold.diagram || { labels: scaffold.content.diagramLabels });
+      if (!diagram.valid) blocking.push(...diagram.errors);
+      else warnings.push(...diagram.warnings);
+    }
+    if (options.largePrint && wordCount > (paper === "a5" ? 110 : 230)) warnings.push("Enlarged print needs more pages or fewer items; type must not be squeezed to fit.");
+    return { formatId: format.id, paper, orientation, mode, wordCount, blocking: unique(blocking), warnings: unique(warnings), status: blocking.length ? "Do not print yet" : warnings.length ? "Review preview" : "Ready for physical preview" };
   }
 
   function createStage(rawScaffold, stage) {
@@ -292,6 +415,7 @@
 
   window.ScaffoldResourceEngine = {
     normalise, renderBody, renderDiagram, diagramValidation, validationIssues, qualityAudit,
-    createStage, stageSet, nextFade, sanitizeImport, engineById, profileFor, stageRules
+    createStage, stageSet, nextFade, sanitizeImport, engineById, profileFor, stageRules,
+    coreTaskFor, stagePromptSet, supportProfile, printPreflight
   };
 })();

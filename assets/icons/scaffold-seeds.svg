@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <title>Scaffold Seeds</title>
+  <rect width="512" height="512" fill="#303654"/>
+  <circle cx="256" cy="256" r="166" fill="#fffdf8"/>
+  <path d="M256 350V218" fill="none" stroke="#3f456f" stroke-width="25" stroke-linecap="round"/>
+  <path d="M251 270c-78 0-120-43-120-115 74-8 120 35 120 115Z" fill="#9eb09f" stroke="#3f456f" stroke-width="15" stroke-linejoin="round"/>
+  <path d="M261 230c0-75 43-120 120-118 0 74-46 118-120 118Z" fill="#c9d5c8" stroke="#3f456f" stroke-width="15" stroke-linejoin="round"/>
+  <path d="M193 385c37-21 89-21 126 0" fill="none" stroke="#a96f58" stroke-width="20" stroke-linecap="round"/>
+</svg>

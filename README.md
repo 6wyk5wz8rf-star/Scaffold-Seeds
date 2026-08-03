@@ -1,75 +1,81 @@
 # Scaffold Seeds
 
-Scaffold Seeds is a local-first classroom scaffold designer for primary teachers in England. It begins with one question: **Where are pupils getting stuck?**
+Scaffold Seeds is a local-first scaffold designer for primary teachers in England. It begins with one question: **Where are pupils getting stuck?** It helps a teacher identify the barrier, preserve the curriculum thinking, choose the smallest useful support and plan how that support will disappear.
 
-The application reasons from year group, subject, curriculum area, learning objective and a teacher's observation. It then suggests likely barriers and recommends a scaffold structure designed to remove the barrier without lowering the challenge.
+This repository contains the Build 5 Gold Master release candidate. It completes and refines the systems developed across Builds 1–4; it does not replace them with a new application.
 
-## Build 4 · AI enhancement and verification
+## Release identity
 
-Build 4 keeps Scaffold Seeds as the architect, editor, verifier and print engine. External generative AI is optional, provider-neutral and never contacted by the application.
+- one seven-step teacher workflow: Learning → Sticking point → Protect thinking → Choose support → Build → Review → Output
+- 78 local scaffold engines across 13 subject areas, EYFS to Year 6
+- explicit curriculum-profile and year-progression routing, with honest England, locally determined RE and September 2026 RSHE/EYFS context labels
+- a protected `coreTask` that remains visible while examples, vocabulary, prompts and adult cues reduce across Seed, Sprout, Growth and Independent
+- evidence-based quality judgements that distinguish local checks from teacher review instead of claiming guaranteed effectiveness
+- value-aware local diagrams, with schematic warnings whenever a relationship cannot be validated from supplied values
+- Reflection Studio histories that record what worked, surprises, observed misconceptions, support removed and the next thing to fade, then surface relevant prior practice calmly
 
-- five-stage Design locally → Request narrowly → Return safely → Review changes → Verify and rebuild workflow
-- 56 focused Generate, Adapt, Critique, Verify and Enrich tasks, with Quick, Professional and Forensic prompt depths
-- task-specific studios for passages, questions, examples and non-examples, models, misconceptions, vocabulary and teacher modelling
-- modular prompt construction using only relevant curriculum, barrier, protected-thinking, engine, growth, safeguard, print and return-format sections
-- plain, compact, structured, image-brief, verification-only and complete AI Prompt Packet exports
-- local privacy scrubber for possible names, initials, contact details, dates of birth, addresses, schools, diagnoses and sensitive histories
-- raw-response preservation and recovery from structured text, markdown, tables, lists, valid or malformed JSON, commentary and unexpected sections
-- item- and section-level Accept, Edit, Reject, Keep original, Compare, Manual mapping and Regenerate-section controls
-- transparent comparison of original and proposed content, including reading-length change and accessible plain comparison
-- structural, pedagogical, subject, language, inclusion, source and print verification with restrained Information, Review, Important and Do not use yet findings
-- deterministic arithmetic, conversion and local-diagram checks where possible, plus cautious subject-pattern checks across all 13 subjects
-- human approval gate, automatic pre-apply checkpoint, named enhancement rounds, provenance, source records and rejected-change history
-- per-resource recovery workspaces, schema-v4 migration, full or reduced-history backup and portable resource export
-- optional local image preparation with crop-to-fit, rotation, greyscale and sampled contrast, ink and print-size checks, plus a computing manual-trace tool; no image upload, facial recognition, API key, backend or provider account
-- Home and Library review states that keep local scaffold creation primary and prevent bulk approval of unresolved high-risk content
+## Print Studio
 
-## Build 3 · Scaffold engineering retained
+Print Studio composes resources for their physical purpose rather than exporting web pages.
 
-- seven-stage Learning → Sticking point → Protect thinking → Choose support → Build → Review → Output workflow
-- 78 functional scaffold engines across 13 English-primary subject areas
-- modular local composition of instructions, examples, prompts, vocabulary, oral rehearsal, diagrams, response spaces, teacher guidance and fading rules
-- live split-view Scaffold Designer with section-level local regeneration
-- four genuinely different Seed, Sprout, Growth and Independent resources, side-by-side comparison and discreet mixed packs
-- 18 reflowing classroom formats, including desk strips, cards, foldables, mini-booklets, modelling pages, intervention packs, home support and tiled posters
-- Print Studio 3 with five ink modes, photocopy intelligence, crop and cut lines, duplex guidance, enlarged print and selected growth stages
-- browser-native SVG diagrams with type-specific checks for scale, labels, sequence and structure
-- 11-part professional quality audit using explainable judgements rather than effectiveness percentages
-- mature local library with archive, restore, favourites, detailed filters, reflections, named checkpoints and version restore
-- the original bounded AI prompt generator, now superseded by the Build 4 editorial exchange
-- local settings, transparent preference adaptation, safe JSON backup and no named pupil profiles
+- 19 classroom formats, including A4/A5 workpages, desk strips, folded references, vocabulary cards, paired discussion cards, teacher guides, intervention packs, posters, mixed packs and a genuinely imposed two-sided four-page booklet
+- seven semantic output styles: Full colour, Soft classroom colour, Pastel classroom colour, Greyscale, Pure black and white, High contrast and Ink saver
+- locally hosted **Playwrite IT Moderna** throughout the interface and printed output, with a layout-safe sans-serif fallback
+- format-aware paper/orientation presets, functional card counts, cut/crop controls only where meaningful, and derived duplex guidance
+- preflight checks for format compatibility, diagram integrity, density and enlarged print, followed by measured overflow and footer-collision checks after fonts and images are ready
+- no model-answer, photocopy or duplex controls that merely look functional
 
-The foundation-subject model follows the current England primary curriculum. Religious Education is explicitly treated as locally determined, while PSHE and Relationships resources are designed around safeguarding-sensitive neutral scenarios and the revised statutory guidance for September 2026.
+## AI Companion
 
-## Build 2 foundation retained
+External AI remains optional, provider-neutral and outside the application. Scaffold Seeds prepares a narrow prompt, preserves the local design, imports returned text as inert content, supports item-level review, verifies what it can locally and rebuilds the final resource itself.
 
-- EYFS to Year 6 curriculum contexts for English, mathematics, science, history, geography and computing
-- subject-specific curriculum brains organised around big ideas, threshold concepts, prerequisite knowledge, small steps, disciplinary thinking, misconceptions, vocabulary, representations, assessment and teacher decisions
-- distinct lenses for reading, fluency, composition, grammar, spelling, oracy, editing and handwriting; mathematical structures and representation choice; scientific knowledge and enquiry; historical concepts; geographical place, scale and fieldwork; and computing logic, data, systems and debugging
-- 12 scaffold families and 15 distinctive engines with explained recommendations and caution conditions
-- live, non-interrupting design guidance as a teacher describes the learning barrier
-- Seed, Sprout, Growth and Independent versions that can be switched instantly
-- an eight-part quality dashboard covering curriculum alignment, barrier precision, challenge, independence, clarity, cognitive load, print quality and fade potential
-- Knowledge Studio for professional subject browsing
-- 10 classroom print formats including workpages, reusable cards, desk strips, paired discussion cards, posters and foldables
-- after-use reflection that informs future recommendations on the same device
-- local library, accessibility controls, JSON backup/restore and detailed external AI prompts without data transfer
+- 56 focused Generate, Adapt, Critique, Verify and Enrich tasks
+- Quick, Professional and Forensic prompt depths
+- local pupil-information scrubber and cautious privacy language
+- recoverable plain-text, markdown, list, table and JSON imports
+- Accept, Edit, Reject, Keep original, manual mapping, comparison and visible trimming records
+- structural, pedagogical, subject, language, inclusion, source and print verification
+- deterministic mathematical checks where possible and transparent pattern-based warnings elsewhere
+- human approval gate, provenance, source records, named rounds and pre-apply checkpoints
+- no API keys, direct AI calls, backend, account, analytics or simulated generation
+
+## Reliability and offline use
+
+- schema-v5 IndexedDB persistence with transactional snapshots, checksums, revision conflicts, recovery checkpoints and multi-tab change signals
+- localStorage retained only as a compatible emergency cache and Build 4 migration source
+- full, selected and single-resource envelopes all pass through one validator and can round-trip
+- import preview with Merge or Replace; replace is committed only after full validation and an automatic recovery checkpoint
+- malformed records are quarantined individually instead of hiding the rest of a library
+- recoverable deletion, exact version replacement and compact version snapshots that do not duplicate image data
+- debounced library search and a 60-resource render window for large libraries
+- installable static PWA shell and same-origin offline cache; no network dependency after the application shell is cached
+
+## Accessibility and iPad
+
+- named switches and exposed pressed/selected states
+- modal focus trapping and focus restoration
+- keyboard-operable tablists, visible focus, forced-colour support and retained status announcements on narrow screens
+- coarse-pointer targets of at least 44 × 44 CSS pixels
+- dynamic viewport and safe-area handling, responsive paper aspect ratios and hover effects limited to hover-capable pointers
+- copy fallback, autosave before leaving for an external AI tool and resource-specific workspace recovery
 
 ## Architecture
 
-- `data.js` — Build 2 curriculum and barrier knowledge
-- `build3-data.js` — subject expansion, professional engine definitions, formats and AI task vocabulary
-- `build4-data.js` — focused AI tasks, prompt depths, subject safeguards, return schemas and per-engine compatibility metadata
-- `resource-engine.js` — local composition, stage fading, SVG diagrams, validation and quality judgements
-- `verification-engine.js` — deterministic and rule-based structural, pedagogical, subject, language, inclusion, source and print checks
-- `ai-companion.js` — prompt construction, privacy scrubbing, safe import parsing, comparison, section decisions, provenance and portable exports
-- `app.js` — interface, workflow, versioned local persistence, library, approval, print production and exports
-- `tests/build4-engine.test.js` — automated Build 4 prompt, import, privacy, acceptance and verification coverage
-- `tests/BUILD4_TEST_PROTOCOL.md` — full browser, iPad, print, persistence and professional review protocol
+- `data.js` — core curriculum, barriers and early scaffold knowledge
+- `build3-data.js` — subject expansion, engine definitions and print formats
+- `build4-data.js` — AI tasks, safeguards, return schemas and engine compatibility
+- `build5-data.js` — release profiles, explicit curriculum routing, seven print modes and physical-format rules
+- `resource-engine.js` — local composition, fading invariants, diagrams, print preflight and quality judgements
+- `verification-engine.js` — deterministic and rule-based verification
+- `ai-companion.js` — prompt construction, privacy scrubbing, safe import, comparison and provenance
+- `persistence.js` — schema-v5 validation, IndexedDB transactions, conflicts, recovery and portability
+- `app.js` — teacher workflow, Library, Reflection Studio, AI editorial desk and Print Studio
+- `styles.css` — unified Playwrite design system, semantic print palettes and responsive/accessibility rules
+- `manifest.webmanifest` / `sw.js` — installable offline application shell
 
 ## Run locally
 
-No build tools or dependencies are required. Serve the repository as static files:
+No build tool or runtime dependency is required. Serve the repository as static files:
 
 ```sh
 python3 -m http.server 8080
@@ -77,16 +83,20 @@ python3 -m http.server 8080
 
 Then open `http://localhost:8080`.
 
-## Privacy
-
-There is no account, backend, analytics or external AI connection. Scaffold Seeds never sends a prompt or response anywhere. A prompt leaves the application only when a teacher copies or downloads it and then chooses to use another service. Imported responses, review decisions and source records are stored in the browser with `localStorage` and can be exported as JSON. Identifiable pupil information should never be included in an external AI prompt; the local scrubber is a review aid, not a guarantee.
-
-## Test
-
-Run the dependency-free automated suite:
+## Automated release gates
 
 ```sh
 node tests/build4-engine.test.js
+node tests/build5-persistence.test.js
+node tests/build5-release.test.js
+node tests/build5-static.test.js
+node tests/build5-simulation.test.js
 ```
 
-Then use the manual protocol for Safari, iPad Safari, clipboard, accessibility and physical print checks.
+The combined automated suite covers 106,402 assertions. Its core combinatorial gate generates 41,496 subject × year × engine × stage × format cases; the release simulation adds the complete 1,064-case print-rule matrix and a 5,000-resource library load. See `tests/BUILD5_RELEASE_PROTOCOL.md` for the accessibility, iPad Safari and physical print sign-off that cannot be established by a static test runtime.
+
+## Privacy
+
+Scaffold Seeds has no account, backend, analytics or external AI connection. It does not send prompts, responses or pupil information anywhere. A prompt leaves only when a teacher copies or downloads it and then chooses to use another service. The local privacy scrubber is a review aid, not a guarantee; identifiable pupil information should never be placed into an external AI prompt.
+
+The application is scoped to curriculum contexts for primary education in England. It does not imply that one curriculum model applies across all UK nations.

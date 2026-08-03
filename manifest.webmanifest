@@ -1,0 +1,30 @@
+{
+  "id": "./",
+  "name": "Scaffold Seeds",
+  "short_name": "Scaffold Seeds",
+  "description": "Design temporary, curriculum-aware scaffolds that preserve pupil thinking and grow independence.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "display_override": ["window-controls-overlay", "standalone", "minimal-ui"],
+  "orientation": "any",
+  "background_color": "#f6f3ec",
+  "theme_color": "#303654",
+  "lang": "en-GB",
+  "dir": "ltr",
+  "categories": ["education", "productivity"],
+  "icons": [
+    {
+      "src": "assets/icons/scaffold-seeds-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "assets/icons/scaffold-seeds.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
