@@ -243,6 +243,7 @@ async function run() {
     reviewLevel: "forensic",
     quantity: 1
   });
+  verification.contentChecksum = AI.verificationFingerprint(scaffold, parsed, []);
   check(verification.blocking === 0 && verification.canApprove === true, "Local verification permits professional approval only after the accepted calculations pass");
   check(verification.findings.some(finding => finding.title === "Explicit calculations checked" && finding.resolved), "Both explicit calculations receive a transparent deterministic check");
   check(!verification.findings.some(finding => finding.severity === "do-not-use" && !finding.resolved), "No unresolved do-not-use finding remains");
@@ -251,12 +252,13 @@ async function run() {
   const acceptedValues = Object.values(AI.acceptedContent(parsed)).flat();
   const humanGateOpen = approvalChecked && verification.canApprove && acceptedValues.length > 0;
   check(humanGateOpen, "The explicit human approval gate is satisfied before application");
-  const unverifiedAttempt = AI.applyAccepted(scaffold, parsed, { prompt, approved: true });
-  check(unverifiedAttempt.resource.ai.status === "review-required" && !unverifiedAttempt.round.approved, "Approval cannot be recorded without a completed local verification result");
+  assert.throws(() => AI.applyAccepted(scaffold, parsed, { prompt, approved: true }), error => error?.code === "STALE_VERIFICATION", "Approval cannot reuse a missing or stale verification result");
+  const unverifiedAttempt = AI.applyAccepted(scaffold, parsed, { prompt, approved: false });
+  check(unverifiedAttempt.resource.ai.status === "review-required" && !unverifiedAttempt.round.approved, "Unverified content can be previewed but cannot be recorded as approved");
   const pendingAttempt = deepClone(parsed);
   pendingAttempt.sections.find(section => section.id === "uncertainties").items[0].status = "pending";
-  const undecidedApply = AI.applyAccepted(scaffold, pendingAttempt, { prompt, verification, approved: true });
-  check(undecidedApply.resource.ai.status === "review-required" && !undecidedApply.round.approved, "Approval cannot be recorded while an imported item remains undecided");
+  assert.throws(() => AI.applyAccepted(scaffold, pendingAttempt, { prompt, verification, approved: true }), error => error?.code === "AI_DECISIONS_PENDING", "Approval cannot be recorded while an imported item remains undecided");
+  assertions += 1;
   const applied = AI.applyAccepted(scaffold, parsed, {
     prompt,
     verification,

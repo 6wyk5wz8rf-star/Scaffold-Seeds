@@ -16,6 +16,8 @@
   const MAX_IMPORT_TEXT = 60000;
   const MAX_IMAGE_BYTES = 2500000;
   const MAX_BACKUP_BYTES = 50 * 1024 * 1024;
+  const MAX_BACKUP_RESOURCES = 10000;
+  const MAX_RECOVERY_SNAPSHOTS = 20;
   const STORE_NAMES = ["resources", "workspaces", "versions", "assets", "drafts", "trash", "recovery", "meta"];
   const DANGEROUS_KEYS = new Set(["__proto__", "prototype", "constructor"]);
 
@@ -83,6 +85,20 @@
       super(message, "REVISION_CONFLICT", details);
       this.name = "ConflictError";
     }
+  }
+
+  function normaliseStorageFailure(error, operation = "write") {
+    if (error instanceof PersistenceError) return error;
+    const name = String(error?.name || "");
+    const code = Number(error?.code);
+    if (name === "QuotaExceededError" || name === "NS_ERROR_DOM_QUOTA_REACHED" || code === 22 || code === 1014) {
+      return new PersistenceError("Browser storage is full. The previous durable data remains unchanged.", "STORAGE_QUOTA", {
+        operation,
+        unchanged: true,
+        causeName: name || "QuotaExceededError"
+      });
+    }
+    return error;
   }
 
   function isPlainObject(value) {
@@ -282,13 +298,22 @@
       ...safeJsonValue(raw.lastVerification, { maximumDepth: 8, maximumArray: 250, maximumString: 5000 }),
       findings: Array.isArray(raw.lastVerification.findings) ? raw.lastVerification.findings.slice(0, 250).map((item, index) => normaliseFinding(item, { index })).filter(Boolean) : []
     } : null;
+    const requestedStatus = enumValue(raw.status, ENUMS.aiStatuses, "local-draft");
+    const approvalFingerprintValid = /^[a-f0-9]{64}$/i.test(String(lastVerification?.contentChecksum || ""))
+      && Number.isFinite(Date.parse(lastVerification?.checkedAt || ""))
+      && Array.isArray(raw.lastVerification?.findings)
+      && isPlainObject(raw.approval)
+      && Boolean(text(raw.approval.text, "", 1000))
+      && Number.isFinite(Date.parse(raw.approval.approvedAt || ""));
+    const approvalRequiresRecheck = ["teacher-approved", "print-ready"].includes(requestedStatus) && !approvalFingerprintValid;
     return {
       ...safe,
       schemaVersion: SCHEMA_VERSION,
-      status: enumValue(raw.status, ENUMS.aiStatuses, "local-draft"),
+      status: approvalRequiresRecheck ? "review-required" : requestedStatus,
       rounds,
       provenance,
-      lastVerification
+      approval: approvalRequiresRecheck ? null : isPlainObject(raw.approval) ? safeJsonValue(raw.approval, { maximumDepth: 4, maximumArray: 20, maximumString: 2000 }) : null,
+      lastVerification: approvalRequiresRecheck ? null : lastVerification
     };
   }
 
@@ -455,7 +480,7 @@
     safeOptions.depth = enumValue(sourceOptions.depth, ENUMS.promptDepths, "professional");
     safeOptions.reviewLevel = enumValue(sourceOptions.reviewLevel, ENUMS.reviewLevels, "careful");
     safeOptions.returnFormat = enumValue(sourceOptions.returnFormat, ["structured-text", "json", "plain-text"], "structured-text");
-    safeOptions.stageScope = enumValue(sourceOptions.stageScope, ["all", ...ENUMS.stages], "all");
+    safeOptions.stageScope = enumValue(sourceOptions.stageScope, ["all", "current", ...ENUMS.stages], "all");
     safeOptions.paper = enumValue(String(sourceOptions.paper || "").toLowerCase(), ENUMS.papers, "a4");
     safeOptions.orientation = enumValue(sourceOptions.orientation, ENUMS.orientations, "portrait");
     safeOptions.inkMode = enumValue(sourceOptions.inkMode, [...ENUMS.printModes, ...ENUMS.legacyPrintModes], "ink-saver");
@@ -587,7 +612,7 @@
 
   function parseInput(raw, report) {
     if (typeof raw !== "string") return raw;
-    if (raw.length > MAX_BACKUP_BYTES) {
+    if (raw.length > MAX_BACKUP_BYTES || utf8Bytes(raw).byteLength > MAX_BACKUP_BYTES) {
       reportError(report, "BACKUP_TOO_LARGE", "The backup exceeds the safe local import limit.");
       return null;
     }
@@ -636,9 +661,32 @@
       resources = [];
     }
 
-    if (source.integrity?.checksum) {
-      const calculated = canonicalChecksumSync(bundleForIntegrity(source));
-      if (calculated !== source.integrity.checksum) reportError(report, "CHECKSUM_MISMATCH", "The backup checksum does not match its contents.", "integrity.checksum");
+    const sourceResourceCount = resources.length;
+    if (sourceResourceCount > MAX_BACKUP_RESOURCES) {
+      reportError(report, "RESOURCE_LIMIT_EXCEEDED", `The backup contains more than ${MAX_BACKUP_RESOURCES.toLocaleString("en-GB")} resources. Split it into smaller verified backups.`, "library");
+      resources = resources.slice(0, MAX_BACKUP_RESOURCES);
+    }
+
+    const requireIntegrity = options.requireIntegrity ?? (typeof raw === "string" && report.sourceSchemaVersion >= SCHEMA_VERSION);
+    if (source.integrity !== undefined && !isPlainObject(source.integrity)) {
+      reportError(report, "INTEGRITY_INVALID", "The backup integrity record is malformed.", "integrity");
+    } else if (source.integrity?.checksum) {
+      if (source.integrity.algorithm !== "SHA-256") reportError(report, "INTEGRITY_ALGORITHM_INVALID", "The backup does not use the supported SHA-256 integrity algorithm.", "integrity.algorithm");
+      if (!Number.isSafeInteger(source.integrity.resourceCount) || source.integrity.resourceCount !== sourceResourceCount) {
+        reportError(report, "RESOURCE_COUNT_MISMATCH", "The backup resource count does not match its integrity record.", "integrity.resourceCount");
+      }
+      if (!/^[a-f0-9]{64}$/i.test(String(source.integrity.checksum))) {
+        reportError(report, "CHECKSUM_INVALID", "The backup integrity checksum is malformed.", "integrity.checksum");
+      } else {
+        try {
+          const calculated = canonicalChecksumSync(bundleForIntegrity(source));
+          if (calculated !== source.integrity.checksum) reportError(report, "CHECKSUM_MISMATCH", "The backup checksum does not match its contents.", "integrity.checksum");
+        } catch (error) {
+          reportError(report, "CHECKSUM_INVALID", "The backup could not be checksummed safely.", "integrity.checksum");
+        }
+      }
+    } else if (requireIntegrity) {
+      reportError(report, "CHECKSUM_MISSING", "A current Scaffold Seeds backup must include its integrity checksum.", "integrity");
     } else reportWarning(report, "CHECKSUM_MISSING", "This legacy export has no integrity checksum.", "integrity");
 
     const now = validDate(options.now, new Date().toISOString());
@@ -663,6 +711,7 @@
       ids.add(normalised.id);
       library.push(normalised);
     });
+    if (resources.length > 0 && library.length === 0) reportError(report, "NO_VALID_RESOURCES", "Every resource in this backup was quarantined, so it cannot replace the current library.", "library");
 
     const rawWorkspaces = Array.isArray(source.aiWorkspaces)
       ? source.aiWorkspaces.map(workspace => [workspace?.resourceId, workspace])
@@ -703,7 +752,7 @@
       ? { library: input }
       : isPlainObject(input) && (input.library || input.resources || input.resource) ? input : { library: [] };
     const report = validateBundle({ ...source, product: PRODUCT, schemaVersion: Math.min(Number(source.schemaVersion) || SCHEMA_VERSION, SCHEMA_VERSION), integrity: undefined }, options);
-    if (!report.bundle) throw new PersistenceError("A bundle could not be created.", "BUNDLE_CREATE_FAILED", report);
+    if (!report.valid || !report.bundle) throw new PersistenceError("A bundle could not be created from invalid data.", "BUNDLE_CREATE_FAILED", report);
     report.bundle.exportedAt = validDate(options.now, new Date().toISOString());
     return withIntegrity(report.bundle);
   }
@@ -746,6 +795,15 @@
     return report;
   }
 
+  function invalidateCopiedApproval(resource) {
+    const copy = clone(resource);
+    const ai = copy?.ai;
+    if (ai && (ai.lastVerification || ai.approval || ["teacher-approved", "print-ready"].includes(ai.status))) {
+      copy.ai = { ...ai, status: "review-required", approval: null, lastVerification: null };
+    }
+    return copy;
+  }
+
   function mergeBundles(current, incoming, options = {}) {
     const conflict = options.conflict || "copy";
     const resources = new Map((current.library || []).map(resource => [resource.id, clone(resource)]));
@@ -770,22 +828,30 @@
       let suffix = 2;
       let id = `${resource.id}-import-${suffix}`;
       while (resources.has(id)) { suffix += 1; id = `${resource.id}-import-${suffix}`; }
-      resources.set(id, { ...clone(resource), id, title: `${resource.title} · imported copy`, revision: 0 });
+      resources.set(id, invalidateCopiedApproval({ ...clone(resource), id, title: `${resource.title} · imported copy`, revision: 0 }));
       idMap.set(resource.id, id);
     });
     const workspaces = { ...(current.aiWorkspaces || {}) };
     Object.entries(incoming.aiWorkspaces || {}).forEach(([resourceId, workspace]) => {
       const mappedId = idMap.get(resourceId);
       if (!mappedId) return;
-      workspaces[mappedId] = { ...clone(workspace), resourceId: mappedId, id: `workspace-${mappedId}`, revision: 0 };
+      const copied = mappedId !== resourceId;
+      if (!copied && workspaces[mappedId] && conflict !== "overwrite") return;
+      workspaces[mappedId] = {
+        ...clone(workspace),
+        resourceId: mappedId,
+        id: `workspace-${mappedId}`,
+        revision: 0,
+        ...(copied ? { verification: null, approvalChecked: false, appliedAt: null } : {})
+      };
     });
     return createBundle({
       ...current,
       library: [...resources.values()],
       settings: options.keepCurrentSettings ? current.settings : incoming.settings,
       reflections: { ...(current.reflections || {}), ...(incoming.reflections || {}) },
-      preferences: { ...(current.preferences || {}), ...(incoming.preferences || {}) },
-      draft: incoming.draft || current.draft,
+      preferences: options.keepCurrentSettings ? current.preferences : { ...(current.preferences || {}), ...(incoming.preferences || {}) },
+      draft: options.keepCurrentSettings ? current.draft : incoming.draft || current.draft,
       aiWorkspaces: workspaces,
       assets: [...(current.assets || []), ...(incoming.assets || [])]
     });
@@ -804,6 +870,20 @@
       transaction.onerror = () => reject(rejection?.() || transaction.error || new PersistenceError("IndexedDB transaction failed.", "IDB_TRANSACTION_FAILED"));
       transaction.onabort = () => reject(rejection?.() || transaction.error || new PersistenceError("IndexedDB transaction was aborted.", "IDB_TRANSACTION_ABORTED"));
     });
+  }
+
+  function excessRecoveryIds(records, maximum = MAX_RECOVERY_SNAPSHOTS, protectedId = "") {
+    if (!Array.isArray(records) || records.length <= maximum) return [];
+    return [...records]
+      .sort((a, b) => {
+        if (a?.id === protectedId) return -1;
+        if (b?.id === protectedId) return 1;
+        const timeDifference = (Date.parse(b?.createdAt || "") || 0) - (Date.parse(a?.createdAt || "") || 0);
+        return timeDifference || String(b?.id || "").localeCompare(String(a?.id || ""));
+      })
+      .slice(maximum)
+      .map(record => record?.id)
+      .filter(Boolean);
   }
 
   function createIndexedDBAdapter(factory, databaseName = DATABASE_NAME) {
@@ -872,7 +952,16 @@
           Object.values(bundle.aiWorkspaces || {}).forEach(workspace => workspaces.put({ ...clone(workspace), workspaceId: workspace.id, id: workspace.resourceId }));
           (bundle.assets || []).forEach(asset => assets.put(clone(asset)));
           [["settings", bundle.settings], ["reflections", bundle.reflections], ["preferences", bundle.preferences], ["draft", bundle.draft], ["bundleMetadata", bundle.metadata || {}], ["generation", committedGeneration], ["schemaVersion", SCHEMA_VERSION]].forEach(([key, value]) => metaStore.put({ key, value: clone(value) }));
-          if (options.recoveryRecord) transaction.objectStore("recovery").put(clone(options.recoveryRecord));
+          if (options.recoveryRecord) {
+            const recovery = transaction.objectStore("recovery");
+            recovery.put(clone(options.recoveryRecord));
+            const recoveryRequest = recovery.getAll();
+            recoveryRequest.onsuccess = () => excessRecoveryIds(recoveryRequest.result, MAX_RECOVERY_SNAPSHOTS, options.recoveryRecord.id).forEach(id => recovery.delete(id));
+            recoveryRequest.onerror = () => {
+              failure = recoveryRequest.error || new PersistenceError("Recovery retention could not be applied.", "RECOVERY_RETENTION_FAILED");
+              transaction.abort();
+            };
+          }
         } catch (error) {
           failure = error;
           transaction.abort();
@@ -885,15 +974,21 @@
 
     async function putRecord(storeName, record, options = {}) {
       const database = await open();
-      const transaction = database.transaction([storeName, "meta"], "readwrite");
+      const incrementGeneration = options.incrementGeneration !== false;
+      const transaction = database.transaction(incrementGeneration ? [storeName, "meta"] : [storeName], "readwrite");
       const store = transaction.objectStore(storeName);
-      const meta = transaction.objectStore("meta");
+      const meta = incrementGeneration ? transaction.objectStore("meta") : null;
       let output;
       let failure = null;
       const existingRequest = store.get(record.id);
       existingRequest.onsuccess = () => {
         try {
           const existing = existingRequest.result;
+          if (options.requireAbsent && existing) {
+            failure = new ConflictError("A record already uses this ID.", { id: record.id, remote: existing });
+            transaction.abort();
+            return;
+          }
           const revision = Number(existing?.revision || 0);
           if (options.expectedRevision !== undefined && revision !== options.expectedRevision) {
             failure = new ConflictError("This record changed in another tab.", { id: record.id, expected: options.expectedRevision, actual: revision, remote: existing });
@@ -902,8 +997,18 @@
           }
           output = { ...clone(record), revision: revision + 1 };
           store.put(output);
-          const generationRequest = meta.get("generation");
-          generationRequest.onsuccess = () => meta.put({ key: "generation", value: Number(generationRequest.result?.value || 0) + 1 });
+          if (incrementGeneration) {
+            const generationRequest = meta.get("generation");
+            generationRequest.onsuccess = () => meta.put({ key: "generation", value: Number(generationRequest.result?.value || 0) + 1 });
+          }
+          if (options.maximumRecords) {
+            const recordsRequest = store.getAll();
+            recordsRequest.onsuccess = () => excessRecoveryIds(recordsRequest.result, options.maximumRecords, output.id).forEach(id => store.delete(id));
+            recordsRequest.onerror = () => {
+              failure = recordsRequest.error || new PersistenceError("Record retention could not be applied.", "RETENTION_FAILED");
+              transaction.abort();
+            };
+          }
         } catch (error) { failure = error; transaction.abort(); }
       };
       await transactionPromise(transaction, () => failure);
@@ -948,9 +1053,10 @@
       const resourceRequest = resources.get(id);
       const workspaceRequest = workspaces.get(id);
       const generationRequest = meta.get("generation");
-      let resource, workspace, generation;
+      const draftRequest = meta.get("draft");
+      let resource, workspace, generation, draft;
       try {
-        [resource, workspace, generation] = await Promise.all([requestPromise(resourceRequest), requestPromise(workspaceRequest), requestPromise(generationRequest)]);
+        [resource, workspace, generation, draft] = await Promise.all([requestPromise(resourceRequest), requestPromise(workspaceRequest), requestPromise(generationRequest), requestPromise(draftRequest)]);
       } catch (error) {
         failure = error;
         try { transaction.abort(); } catch (abortError) { /* already inactive */ }
@@ -958,6 +1064,12 @@
       }
       if (!resource) {
         failure = new PersistenceError("Resource not found.", "NOT_FOUND", { id });
+        transaction.abort();
+        await completed;
+      }
+      const currentGeneration = Number(generation?.value || 0);
+      if (options.expectedGeneration !== undefined && currentGeneration !== options.expectedGeneration) {
+        failure = new ConflictError("The library changed in another tab before this resource could be deleted.", { expected: options.expectedGeneration, actual: currentGeneration });
         transaction.abort();
         await completed;
       }
@@ -969,9 +1081,43 @@
       const deletedAt = options.now || new Date().toISOString();
       const output = { id, resource: clone(resource), workspace: workspace ? clone(workspace) : null, deletedAt, purgeAfter: new Date(new Date(deletedAt).getTime() + 30 * 86400000).toISOString() };
       trash.put(output); resources.delete(id); workspaces.delete(id);
+      if (draft?.value?.editingId === id) meta.put({ key: "draft", value: null });
       meta.put({ key: "generation", value: Number(generation?.value || 0) + 1 });
       await completed;
       return output;
+    }
+
+    async function putDeletedRecord(record, options = {}) {
+      const database = await open();
+      const transaction = database.transaction(["resources", "workspaces", "trash", "meta"], "readwrite");
+      let failure = null;
+      const completed = transactionPromise(transaction, () => failure);
+      const resources = transaction.objectStore("resources");
+      const workspaces = transaction.objectStore("workspaces");
+      const trash = transaction.objectStore("trash");
+      const meta = transaction.objectStore("meta");
+      let current, currentWorkspace, currentDeleted, generation;
+      try {
+        [current, currentWorkspace, currentDeleted, generation] = await Promise.all([
+          requestPromise(resources.get(record.id)),
+          requestPromise(workspaces.get(record.id)),
+          requestPromise(trash.get(record.id)),
+          requestPromise(meta.get("generation"))
+        ]);
+      } catch (error) {
+        failure = error;
+        try { transaction.abort(); } catch (abortError) { /* already inactive */ }
+        await completed;
+      }
+      if (options.requireAbsent && (current || currentWorkspace || currentDeleted)) {
+        failure = new ConflictError("A current or deleted record already uses this ID.", { id: record.id, remote: current || currentDeleted || currentWorkspace });
+        transaction.abort();
+        await completed;
+      }
+      trash.put(clone(record));
+      meta.put({ key: "generation", value: Number(generation?.value || 0) + 1 });
+      await completed;
+      return clone(record);
     }
 
     async function restoreDeleted(id) {
@@ -1006,7 +1152,7 @@
       return output;
     }
 
-    return { kind: "indexeddb", persistent: true, open, snapshot, commitBundle, putRecord, getRecord, getAll, deleteRecord, softDelete, restoreDeleted, close: async () => { const database = await open(); database.close(); databasePromise = null; } };
+    return { kind: "indexeddb", persistent: true, open, snapshot, commitBundle, putRecord, getRecord, getAll, deleteRecord, softDelete, putDeletedRecord, restoreDeleted, close: async () => { const database = await open(); database.close(); databasePromise = null; } };
   }
 
   function createMemoryAdapter() {
@@ -1029,18 +1175,25 @@
       const nextAssets = new Map((bundle.assets || []).map(asset => [asset.id, clone(asset)]));
       stores.resources = nextResources; stores.workspaces = nextWorkspaces; stores.assets = nextAssets;
       [["settings", bundle.settings], ["reflections", bundle.reflections], ["preferences", bundle.preferences], ["draft", bundle.draft], ["bundleMetadata", bundle.metadata || {}], ["generation", generation + 1], ["schemaVersion", SCHEMA_VERSION]].forEach(([key, value]) => stores.meta.set(key, { key, value: clone(value) }));
-      if (options.recoveryRecord) stores.recovery.set(options.recoveryRecord.id, clone(options.recoveryRecord));
+      if (options.recoveryRecord) {
+        stores.recovery.set(options.recoveryRecord.id, clone(options.recoveryRecord));
+        excessRecoveryIds([...stores.recovery.values()], MAX_RECOVERY_SNAPSHOTS, options.recoveryRecord.id).forEach(id => stores.recovery.delete(id));
+      }
       return { generation: generation + 1 };
     };
     const putRecord = async (storeName, record, options = {}) => {
       const store = stores[storeName];
       const existing = store.get(record.id);
+      if (options.requireAbsent && existing) throw new ConflictError("A record already uses this ID.", { id: record.id, remote: clone(existing) });
       const revision = Number(existing?.revision || 0);
       if (options.expectedRevision !== undefined && revision !== options.expectedRevision) throw new ConflictError("This in-memory record changed.", { id: record.id, expected: options.expectedRevision, actual: revision, remote: clone(existing) });
       const output = { ...clone(record), revision: revision + 1 };
       store.set(output.id, output);
-      const generation = Number(stores.meta.get("generation")?.value || 0) + 1;
-      stores.meta.set("generation", { key: "generation", value: generation });
+      if (options.maximumRecords) excessRecoveryIds([...store.values()], options.maximumRecords, output.id).forEach(id => store.delete(id));
+      if (options.incrementGeneration !== false) {
+        const generation = Number(stores.meta.get("generation")?.value || 0) + 1;
+        stores.meta.set("generation", { key: "generation", value: generation });
+      }
       return clone(output);
     };
     const getRecord = async (storeName, id) => stores[storeName].has(id) ? clone(stores[storeName].get(id)) : null;
@@ -1049,10 +1202,22 @@
     const softDelete = async (id, options = {}) => {
       const resource = stores.resources.get(id);
       if (!resource) throw new PersistenceError("Resource not found.", "NOT_FOUND", { id });
+      const generation = Number(stores.meta.get("generation")?.value || 0);
+      if (options.expectedGeneration !== undefined && generation !== options.expectedGeneration) throw new ConflictError("The in-memory library changed before this resource could be deleted.", { expected: options.expectedGeneration, actual: generation });
       if (options.expectedRevision !== undefined && Number(resource.revision || 0) !== options.expectedRevision) throw new ConflictError("This resource changed.", { id, expected: options.expectedRevision, actual: Number(resource.revision || 0), remote: clone(resource) });
       const deletedAt = options.now || new Date().toISOString();
       const record = { id, resource: clone(resource), workspace: stores.workspaces.has(id) ? clone(stores.workspaces.get(id)) : null, deletedAt, purgeAfter: new Date(new Date(deletedAt).getTime() + 30 * 86400000).toISOString() };
       stores.trash.set(id, record); stores.resources.delete(id); stores.workspaces.delete(id);
+      if (stores.meta.get("draft")?.value?.editingId === id) stores.meta.set("draft", { key: "draft", value: null });
+      stores.meta.set("generation", { key: "generation", value: generation + 1 });
+      return clone(record);
+    };
+    const putDeletedRecord = async (record, options = {}) => {
+      const current = stores.resources.get(record.id);
+      const currentWorkspace = stores.workspaces.get(record.id);
+      const currentDeleted = stores.trash.get(record.id);
+      if (options.requireAbsent && (current || currentWorkspace || currentDeleted)) throw new ConflictError("A current or deleted record already uses this ID.", { id: record.id, remote: clone(current || currentDeleted || currentWorkspace) });
+      stores.trash.set(record.id, clone(record));
       const generation = Number(stores.meta.get("generation")?.value || 0) + 1;
       stores.meta.set("generation", { key: "generation", value: generation });
       return clone(record);
@@ -1069,7 +1234,7 @@
       stores.meta.set("generation", { key: "generation", value: generation });
       return clone(resource);
     };
-    return { kind: "memory", persistent: false, open: async () => null, snapshot, commitBundle, putRecord, getRecord, getAll, deleteRecord, softDelete, restoreDeleted, close: async () => {} };
+    return { kind: "memory", persistent: false, open: async () => null, snapshot, commitBundle, putRecord, getRecord, getAll, deleteRecord, softDelete, putDeletedRecord, restoreDeleted, close: async () => {} };
   }
 
   const localSubscribers = new Set();
@@ -1117,6 +1282,14 @@
     let adapter = null;
     let fallbackReason = "";
     let sessionId = safeId(options.sessionId, `tab-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`);
+
+    function subscribeRepository(listener, subscribeOptions = {}) {
+      if (typeof listener !== "function") throw new TypeError("A persistence subscriber must be a function.");
+      return subscribe(event => {
+        if (subscribeOptions.remoteOnly && event?.sessionId === sessionId) return;
+        listener(event);
+      });
+    }
 
     async function open() {
       if (adapter) return capabilities();
@@ -1170,14 +1343,24 @@
       });
     }
 
-    async function createRecoverySnapshot(label = "Recovery snapshot") {
+    async function createRecoverySnapshot(label = "Recovery snapshot", suppliedBundle = null) {
       await open();
-      const bundle = await getSnapshot();
+      let bundle;
+      if (suppliedBundle !== null && suppliedBundle !== undefined) {
+        const validation = validateBundle(suppliedBundle);
+        if (!validation.valid || !validation.bundle) throw new PersistenceError("The supplied recovery state did not pass validation.", "RECOVERY_BUNDLE_INVALID", validation);
+        bundle = withIntegrity(validation.bundle);
+      } else bundle = await getSnapshot();
       const id = `recovery-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
       const record = { id, label: text(label, "Recovery snapshot", 160), createdAt: new Date().toISOString(), bundle };
-      await adapter.putRecord("recovery", record);
+      let saved;
+      try {
+        saved = await adapter.putRecord("recovery", record, { incrementGeneration: false, maximumRecords: MAX_RECOVERY_SNAPSHOTS });
+      } catch (error) {
+        throw normaliseStorageFailure(error, "create-recovery");
+      }
       notifyChange({ type: "recovery-created", id, sessionId });
-      return record;
+      return saved || record;
     }
 
     async function commitSnapshot(raw, options = {}) {
@@ -1185,15 +1368,33 @@
       const validation = validateBundle(raw, options);
       if (!validation.valid) throw new PersistenceError("The snapshot did not pass validation.", "BUNDLE_INVALID", validation);
       const current = await rawSnapshot();
+      const currentGeneration = Number(current.metadata.generation || 0);
+      const expectedGeneration = options.expectedGeneration ?? currentGeneration;
+      if (expectedGeneration !== currentGeneration) {
+        throw new ConflictError("The library changed before the snapshot could be prepared.", { expected: expectedGeneration, actual: currentGeneration });
+      }
       const recovery = options.createRecovery === false ? null : {
         id: `recovery-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
         label: text(options.recoveryLabel, "Before snapshot commit", 160),
         createdAt: new Date().toISOString(),
         bundle: await getSnapshot()
       };
-      await adapter.commitBundle(validation.bundle, { expectedGeneration: options.expectedGeneration ?? Number(current.metadata.generation || 0), recoveryRecord: recovery });
+      let commitResult;
+      try {
+        commitResult = await adapter.commitBundle(validation.bundle, { expectedGeneration, recoveryRecord: recovery });
+      } catch (error) {
+        throw normaliseStorageFailure(error, "commit-snapshot");
+      }
+      const committedSnapshot = withIntegrity({
+        ...clone(validation.bundle),
+        metadata: {
+          ...(validation.bundle.metadata || {}),
+          generation: Number(commitResult?.generation || expectedGeneration + 1),
+          backend: adapter.kind
+        }
+      });
       notifyChange({ type: "snapshot-committed", mode: options.mode || "replace", sessionId });
-      return { validation, recoveryId: recovery?.id || null, snapshot: await getSnapshot() };
+      return { validation, recoveryId: recovery?.id || null, snapshot: committedSnapshot };
     }
 
     async function importBundle(raw, options = {}) {
@@ -1240,6 +1441,28 @@
       return importBundle(record.bundle, { mode: "replace", recoveryLabel: "Before recovery restore" });
     }
     async function softDelete(id, options = {}) { await open(); const result = await adapter.softDelete(id, options); notifyChange({ type: "resource-deleted", id, sessionId }); return result; }
+    async function importDeletedRecord(raw, options = {}) {
+      await open();
+      if (!isPlainObject(raw) || !isPlainObject(raw.resource)) throw new PersistenceError("The deleted record did not contain a resource.", "DELETED_RECORD_INVALID");
+      const now = options.now || new Date().toISOString();
+      const report = { errors: [], warnings: [] };
+      const resource = normaliseResource(raw.resource, { report, now, path: "deleted.resource" });
+      if (!resource || report.errors.length) throw new PersistenceError("The deleted resource did not pass validation.", "DELETED_RECORD_INVALID", report);
+      let workspace = null;
+      if (isPlainObject(raw.workspace)) {
+        const normalised = normaliseWorkspace({ ...raw.workspace, resourceId: resource.id }, { report, now, path: "deleted.workspace" });
+        if (!normalised) throw new PersistenceError("The deleted AI workspace did not pass validation.", "DELETED_WORKSPACE_INVALID", report);
+        workspace = { ...normalised, workspaceId: normalised.id, id: resource.id };
+      }
+      const deletedAt = validDate(raw.deletedAt, now);
+      const defaultPurge = new Date(new Date(deletedAt).getTime() + 30 * 86400000).toISOString();
+      const record = { id: resource.id, resource, workspace, deletedAt, purgeAfter: validDate(raw.purgeAfter, defaultPurge) };
+      let saved;
+      try { saved = await adapter.putDeletedRecord(record, { ...options, requireAbsent: options.requireAbsent !== false }); }
+      catch (error) { throw normaliseStorageFailure(error, "import-deleted"); }
+      notifyChange({ type: "resource-deleted", id: resource.id, sessionId });
+      return saved;
+    }
     async function restoreDeleted(id) { await open(); const result = await adapter.restoreDeleted(id); notifyChange({ type: "resource-restored", id, revision: result.revision, sessionId }); return result; }
     async function listDeleted() { await open(); return adapter.getAll("trash"); }
     async function purgeDeleted(id) { await open(); await adapter.deleteRecord("trash", id); notifyChange({ type: "resource-purged", id, sessionId }); }
@@ -1269,8 +1492,8 @@
       open, close, capabilities, getSnapshot, commitSnapshot, importBundle,
       createRecoverySnapshot, listRecoverySnapshots, getRecoverySnapshot, deleteRecoverySnapshot, restoreRecoverySnapshot,
       putResource, getResource, listResources, putWorkspace, getWorkspace,
-      softDelete, restoreDeleted, listDeleted, purgeDeleted,
-      putAsset, getAsset, estimateStorage, subscribe
+      softDelete, importDeletedRecord, restoreDeleted, listDeleted, purgeDeleted,
+      putAsset, getAsset, estimateStorage, subscribe: subscribeRepository
     };
   }
 
@@ -1282,17 +1505,17 @@
   const proxy = method => (...args) => repository()[method](...args);
 
   return Object.freeze({
-    PRODUCT, SCHEMA_VERSION, DATABASE_NAME, ENUMS, DEFAULT_SETTINGS, MAX_IMPORT_TEXT, MAX_IMAGE_BYTES, MAX_BACKUP_BYTES,
+    PRODUCT, SCHEMA_VERSION, DATABASE_NAME, ENUMS, DEFAULT_SETTINGS, MAX_IMPORT_TEXT, MAX_IMAGE_BYTES, MAX_BACKUP_BYTES, MAX_BACKUP_RESOURCES, MAX_RECOVERY_SNAPSHOTS,
     PersistenceError, ConflictError,
     isPlainObject, safeJsonValue, normaliseImage, normaliseResource, normaliseSettings, normaliseWorkspace,
     canonicalStringify, canonicalChecksumSync, canonicalChecksum, withIntegrity,
     validateBundle, createBundle, mergeBundles, readLegacyLocalStorage,
-    createRepository, subscribe,
+    createRepository, subscribe: proxy("subscribe"),
     open: proxy("open"), close: proxy("close"), capabilities: () => repository().capabilities(),
     getSnapshot: proxy("getSnapshot"), commitSnapshot: proxy("commitSnapshot"), importBundle: proxy("importBundle"),
     createRecoverySnapshot: proxy("createRecoverySnapshot"), listRecoverySnapshots: proxy("listRecoverySnapshots"), getRecoverySnapshot: proxy("getRecoverySnapshot"), deleteRecoverySnapshot: proxy("deleteRecoverySnapshot"), restoreRecoverySnapshot: proxy("restoreRecoverySnapshot"),
     putResource: proxy("putResource"), getResource: proxy("getResource"), listResources: proxy("listResources"), putWorkspace: proxy("putWorkspace"), getWorkspace: proxy("getWorkspace"),
-    softDelete: proxy("softDelete"), restoreDeleted: proxy("restoreDeleted"), listDeleted: proxy("listDeleted"), purgeDeleted: proxy("purgeDeleted"),
+    softDelete: proxy("softDelete"), importDeletedRecord: proxy("importDeletedRecord"), restoreDeleted: proxy("restoreDeleted"), listDeleted: proxy("listDeleted"), purgeDeleted: proxy("purgeDeleted"),
     putAsset: proxy("putAsset"), getAsset: proxy("getAsset"), estimateStorage: proxy("estimateStorage")
   });
 });

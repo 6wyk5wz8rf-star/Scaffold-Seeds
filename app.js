@@ -65,6 +65,17 @@
     return settings;
   }
 
+  function normalisePreferences(raw) {
+    const source = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
+    return {
+      ...source,
+      largerWritingArea: Boolean(source.largerWritingArea),
+      questionPrompts: Boolean(source.questionPrompts),
+      printMode: typeof source.printMode === "string" ? source.printMode.slice(0, 80) : "",
+      aiTask: typeof source.aiTask === "string" ? source.aiTask.slice(0, 120) : undefined
+    };
+  }
+
   function normaliseLocalImage(raw) {
     if (!raw || typeof raw !== "object") return null;
     const dataUrl = String(raw.dataUrl || "");
@@ -103,7 +114,7 @@
     settings: normaliseSettings(readStore(STORAGE.settings, {})),
     reflections: readStore(STORAGE.reflections, {}),
     archives: readStore(STORAGE.archives, []),
-    preferences: readStore(STORAGE.preferences, { largerWritingArea: false, questionPrompts: false, printMode: "" }),
+    preferences: normalisePreferences(readStore(STORAGE.preferences, {})),
     draft: normaliseDraft(readStore(STORAGE.draft, null)),
     activeScaffold: null,
     libraryFilters: { query: "", year: "all", subject: "all", family: "all", format: "all", stage: "all", aiStatus: "all", source: "all", favourite: false, archived: false, sort: "edited" },
@@ -113,6 +124,7 @@
     knowledgeProfile: "reading",
     knowledgeLens: "ideas",
     print: {
+      resourceId: "",
       paper: "a4",
       orientation: "portrait",
       colour: "full-colour",
@@ -136,10 +148,15 @@
   state.print.colour = state.settings.defaultColour;
   state.print.teacherGuidance = state.settings.includeTeacherGuidance;
   state.print.stages = [...state.settings.defaultGrowthStages];
+  if (!state.activeScaffold && state.draft.editingId) state.activeScaffold = state.library.find(item => item.id === state.draft.editingId) || null;
   if (!state.activeScaffold && state.library.length) state.activeScaffold = state.library[0];
   const activeWorkspaceKey = state.activeScaffold?.id ? `${STORAGE.aiWorkspace}.${state.activeScaffold.id}` : STORAGE.aiWorkspace;
   const activeWorkspaceSaved = readStore(activeWorkspaceKey, null) || ([4, 5].includes(state.aiWorkspace?.schemaVersion) ? state.aiWorkspace : null);
   state.aiWorkspace = safeAIWorkspace(state.activeScaffold || {}, activeWorkspaceSaved);
+  let durableAIWorkspaces = {};
+  try { replaceDurableAIWorkspaces(storedAIWorkspaces(true)); }
+  catch (error) { startupRecovery.push("One or more cached AI review workspaces could not be included in the initial migration snapshot."); }
+  if (state.aiWorkspace?.resourceId) rememberDurableAIWorkspace(state.aiWorkspace);
 
   const main = document.getElementById("main-content");
   const modalLayer = document.getElementById("modal-layer");
@@ -147,8 +164,11 @@
   const sidebar = document.getElementById("sidebar");
   const scrim = document.getElementById("sidebar-scrim");
   const appShell = document.querySelector(".app-shell");
+  const appColumn = document.querySelector(".app-column");
   const menuButton = document.getElementById("menu-button");
   let modalReturnFocus = null;
+  let lastRenderedView = "";
+  let lastRenderedCreateStep = -1;
   try { localStorage.setItem(STORAGE.schema, JSON.stringify({ version: 5, migratedAt: new Date().toISOString(), previousLibraryKey: STORAGE.library })); } catch (error) { /* Storage status is surfaced on the first attempted save. */ }
 
   const viewMeta = {
@@ -205,13 +225,22 @@
         startupRecovery.push(`Library record ${index + 1} was quarantined because its title or subject was invalid.`);
         return;
       }
-      const ai = item.ai && typeof item.ai === "object" ? {
+      let ai = item.ai && typeof item.ai === "object" ? {
         ...item.ai,
         schemaVersion: 5,
         rounds: Array.isArray(item.ai.rounds) ? item.ai.rounds.filter(round => round && typeof round === "object").slice(0, 20) : [],
         provenance: Array.isArray(item.ai.provenance) ? item.ai.provenance.filter(record => record && typeof record === "object").slice(0, 100) : [],
         lastVerification: item.ai.lastVerification && typeof item.ai.lastVerification === "object" ? item.ai.lastVerification : null
       } : null;
+      const approvalCurrent = /^[a-f0-9]{64}$/i.test(String(ai?.lastVerification?.contentChecksum || ""))
+        && Number.isFinite(Date.parse(ai?.lastVerification?.checkedAt || ""))
+        && Array.isArray(item.ai?.lastVerification?.findings)
+        && ai?.approval && typeof ai.approval === "object"
+        && Boolean(String(ai.approval.text || "").trim())
+        && Number.isFinite(Date.parse(ai.approval.approvedAt || ""));
+      if (ai && ["teacher-approved", "print-ready"].includes(ai.status) && !approvalCurrent) {
+        ai = { ...ai, status: "review-required", approval: null, lastVerification: null };
+      }
       const reflectionHistory = Array.isArray(item.reflections) ? item.reflections : item.reflection && typeof item.reflection === "object" ? [item.reflection] : [];
       migrated.push({
         ...item,
@@ -247,14 +276,57 @@
   let durableSaveTimer = null;
   let durableGeneration = 0;
   let durableReady = false;
+  let durablePersistent = false;
   let durableCommitInFlight = false;
+  let durableCommitQueued = false;
   let suppressDurable = false;
+  let pendingDurableSnapshot = null;
+  let recoveryResolutionRequired = false;
+  let persistenceSubscribed = false;
+
+  function cloneAIWorkspaceForBundle(workspace, includeRaw = true) {
+    if (!workspace || typeof workspace !== "object") return null;
+    let copy;
+    try { copy = JSON.parse(JSON.stringify(workspace)); }
+    catch (error) { return null; }
+    copy.resourceId = String(copy.resourceId || "").slice(0, 160);
+    if (!copy.resourceId) return null;
+    if (!includeRaw) {
+      copy.rawImport = "";
+      if (copy.parsed) copy.parsed.raw = "";
+    }
+    return copy;
+  }
+
+  function replaceDurableAIWorkspaces(workspaces) {
+    const next = {};
+    Object.entries(workspaces && typeof workspaces === "object" ? workspaces : {}).forEach(([id, workspace]) => {
+      const copy = cloneAIWorkspaceForBundle({ ...workspace, resourceId: workspace?.resourceId || id });
+      if (copy) next[copy.resourceId] = copy;
+    });
+    durableAIWorkspaces = next;
+  }
+
+  function rememberDurableAIWorkspace(workspace) {
+    const copy = cloneAIWorkspaceForBundle(workspace);
+    if (copy) durableAIWorkspaces[copy.resourceId] = copy;
+  }
+
+  function bundledAIWorkspaces(includeRaw = true) {
+    const result = {};
+    Object.values(durableAIWorkspaces).forEach(workspace => {
+      const copy = cloneAIWorkspaceForBundle(workspace, includeRaw);
+      if (copy) result[copy.resourceId] = copy;
+    });
+    return result;
+  }
 
   function saveAIWorkspace() {
     if (aiSaveTimer) clearTimeout(aiSaveTimer);
     aiSaveTimer = null;
     state.aiWorkspace.lastSavedAt = new Date().toISOString();
     if (state.aiWorkspace.resourceId) {
+      rememberDurableAIWorkspace(state.aiWorkspace);
       writeStore(`${STORAGE.aiWorkspace}.${state.aiWorkspace.resourceId}`, state.aiWorkspace);
       writeStore(STORAGE.aiWorkspace, { schemaVersion: 5, resourceId: state.aiWorkspace.resourceId, lastSavedAt: state.aiWorkspace.lastSavedAt });
     } else writeStore(STORAGE.aiWorkspace, state.aiWorkspace);
@@ -268,12 +340,8 @@
       if (!key?.startsWith(prefix)) continue;
       const workspace = readStore(key, null);
       if (!workspace?.resourceId) continue;
-      const copy = JSON.parse(JSON.stringify(workspace));
-      if (!includeRaw) {
-        copy.rawImport = "";
-        if (copy.parsed) copy.parsed.raw = "";
-      }
-      result[workspace.resourceId] = copy;
+      const copy = cloneAIWorkspaceForBundle(workspace, includeRaw);
+      if (copy) result[copy.resourceId] = copy;
     }
     return result;
   }
@@ -305,25 +373,28 @@
   }
 
   function writeStore(key, value) {
+    let saved = false;
     try {
       setSaveStatus("saving");
       localStorage.setItem(key, JSON.stringify(value));
       failedStores.delete(key);
-      setSaveStatus(failedStores.size ? "issue" : "saved");
-      scheduleDurableCommit();
-      return true;
+      saved = true;
     } catch (error) {
       failedStores.add(key);
       setSaveStatus("issue");
       toast("Browser storage is unavailable. Your changes remain in this session.");
-      return false;
     }
+    scheduleDurableCommit();
+    setSaveStatus(failedStores.size ? "issue" : saved ? "saved" : "saving");
+    return saved;
   }
 
   function durableBundle() {
-    let aiWorkspaces = {};
-    try { aiWorkspaces = storedAIWorkspaces(state.settings.aiIncludeResponseHistory); } catch (error) { /* The active workspace is still included below. */ }
-    if (state.aiWorkspace?.resourceId) aiWorkspaces[state.aiWorkspace.resourceId] = safeAIWorkspace(state.activeScaffold || {}, state.aiWorkspace);
+    const aiWorkspaces = bundledAIWorkspaces(state.settings.aiIncludeResponseHistory);
+    if (state.aiWorkspace?.resourceId) {
+      const currentWorkspace = cloneAIWorkspaceForBundle(state.aiWorkspace, state.settings.aiIncludeResponseHistory);
+      if (currentWorkspace) aiWorkspaces[currentWorkspace.resourceId] = currentWorkspace;
+    }
     return {
       product: "Scaffold Seeds",
       schemaVersion: 5,
@@ -338,19 +409,54 @@
     };
   }
 
+  function recoveryRelevantState(bundle) {
+    const aiWorkspaces = {};
+    Object.entries(bundle?.aiWorkspaces || {}).forEach(([id, workspace]) => {
+      const copy = cloneAIWorkspaceForBundle(workspace);
+      if (!copy) return;
+      delete copy.lastSavedAt;
+      aiWorkspaces[id] = copy;
+    });
+    return {
+      library: bundle?.library || [],
+      settings: normaliseSettings(bundle?.settings),
+      reflections: bundle?.reflections && typeof bundle.reflections === "object" ? bundle.reflections : {},
+      preferences: normalisePreferences(bundle?.preferences),
+      draft: normaliseDraft(bundle?.draft),
+      aiWorkspaces
+    };
+  }
+
+  function recoveryRelevantChecksum(bundle) {
+    return PERSISTENCE.canonicalChecksumSync(recoveryRelevantState(bundle));
+  }
+
   function scheduleDurableCommit() {
     if (!PERSISTENCE || !durableReady || suppressDurable) return;
+    if (durableCommitInFlight) {
+      durableCommitQueued = true;
+      setSaveStatus("saving");
+      return;
+    }
     clearTimeout(durableSaveTimer);
     setSaveStatus("saving");
-    durableSaveTimer = setTimeout(commitDurableSnapshot, 420);
+    durableSaveTimer = setTimeout(() => {
+      durableSaveTimer = null;
+      commitDurableSnapshot();
+    }, 420);
   }
 
   async function commitDurableSnapshot() {
-    if (!PERSISTENCE || !durableReady || durableCommitInFlight) return;
+    if (!PERSISTENCE || !durableReady) return;
+    if (durableCommitInFlight) {
+      durableCommitQueued = true;
+      return;
+    }
     durableCommitInFlight = true;
     try {
       const result = await PERSISTENCE.commitSnapshot(durableBundle(), { expectedGeneration: durableGeneration, createRecovery: false });
       durableGeneration = Number(result.snapshot?.metadata?.generation || durableGeneration + 1);
+      replaceDurableAIWorkspaces(result.snapshot?.aiWorkspaces || {});
       failedStores.delete("durable");
       setSaveStatus(failedStores.size ? "issue" : "saved");
     } catch (error) {
@@ -360,7 +466,24 @@
       else toast("The durable save did not complete. Your current tab still holds the changes; export a recovery copy if the issue continues.");
     } finally {
       durableCommitInFlight = false;
+      if (durableCommitQueued) {
+        durableCommitQueued = false;
+        clearTimeout(durableSaveTimer);
+        durableSaveTimer = setTimeout(() => {
+          durableSaveTimer = null;
+          commitDurableSnapshot();
+        }, 0);
+      }
     }
+  }
+
+  async function flushDurableSnapshot() {
+    clearTimeout(durableSaveTimer);
+    durableSaveTimer = null;
+    while (durableCommitInFlight) await new Promise(resolve => setTimeout(resolve, 20));
+    durableCommitQueued = false;
+    await commitDurableSnapshot();
+    while (durableCommitInFlight) await new Promise(resolve => setTimeout(resolve, 20));
   }
 
   function newestLibraryTime(items) {
@@ -369,25 +492,76 @@
 
   function cacheSnapshot(snapshot) {
     suppressDurable = true;
+    let cacheFailed = false;
+    const cacheSet = (key, value) => {
+      try { localStorage.setItem(key, JSON.stringify(value)); }
+      catch (error) { cacheFailed = true; }
+    };
+    const cacheRemove = key => {
+      try { localStorage.removeItem(key); }
+      catch (error) { cacheFailed = true; }
+    };
     try {
+      replaceDurableAIWorkspaces(snapshot.aiWorkspaces || {});
       state.library = migrateLibrary(snapshot.library || []);
       state.settings = normaliseSettings(snapshot.settings || {});
       state.reflections = snapshot.reflections && typeof snapshot.reflections === "object" ? snapshot.reflections : {};
-      state.preferences = snapshot.preferences && typeof snapshot.preferences === "object" ? snapshot.preferences : {};
+      state.preferences = normalisePreferences(snapshot.preferences);
       state.draft = normaliseDraft(snapshot.draft);
       state.activeScaffold = state.library.find(item => item.id === state.activeScaffold?.id) || state.library[0] || null;
-      const savedWorkspace = state.activeScaffold?.id ? snapshot.aiWorkspaces?.[state.activeScaffold.id] : null;
+      const savedWorkspace = state.activeScaffold?.id ? durableAIWorkspaces[state.activeScaffold.id] : null;
       state.aiWorkspace = safeAIWorkspace(state.activeScaffold || {}, savedWorkspace);
-      localStorage.setItem(STORAGE.library, JSON.stringify(state.library));
-      localStorage.setItem(STORAGE.settings, JSON.stringify(state.settings));
-      localStorage.setItem(STORAGE.reflections, JSON.stringify(state.reflections));
-      localStorage.setItem(STORAGE.preferences, JSON.stringify(state.preferences));
-      localStorage.setItem(STORAGE.draft, JSON.stringify(state.draft));
-      Object.entries(snapshot.aiWorkspaces || {}).forEach(([id, workspace]) => localStorage.setItem(`${STORAGE.aiWorkspace}.${id}`, JSON.stringify(workspace)));
+      cacheSet(STORAGE.library, state.library);
+      cacheSet(STORAGE.settings, state.settings);
+      cacheSet(STORAGE.reflections, state.reflections);
+      cacheSet(STORAGE.preferences, state.preferences);
+      cacheSet(STORAGE.draft, state.draft);
+      cacheRemove(STORAGE.aiWorkspace);
+      try {
+        for (let index = localStorage.length - 1; index >= 0; index -= 1) {
+          const key = localStorage.key(index);
+          if (key?.startsWith(`${STORAGE.aiWorkspace}.`)) cacheRemove(key);
+        }
+      } catch (error) { cacheFailed = true; }
+      Object.entries(snapshot.aiWorkspaces || {}).forEach(([id, workspace]) => cacheSet(`${STORAGE.aiWorkspace}.${id}`, workspace));
+      if (state.aiWorkspace?.resourceId) cacheSet(STORAGE.aiWorkspace, { schemaVersion: 5, resourceId: state.aiWorkspace.resourceId, lastSavedAt: state.aiWorkspace.lastSavedAt });
       applySettings();
     } finally {
       suppressDurable = false;
+      if (cacheFailed) {
+        failedStores.add("local-cache");
+        setSaveStatus("issue");
+        if (!startupRecovery.includes("The durable update succeeded, but the compatibility cache could not be refreshed.")) startupRecovery.push("The durable update succeeded, but the compatibility cache could not be refreshed.");
+      } else failedStores.delete("local-cache");
     }
+  }
+
+  function subscribeToPersistenceChanges() {
+    if (persistenceSubscribed) return;
+    PERSISTENCE.subscribe(event => {
+      if (durableCommitInFlight || !event?.type || event.type === "recovery-created") return;
+      startupRecovery.push("Another Scaffold Seeds tab changed local data. Reload before editing the same resource; no automatic overwrite was made.");
+      state.recoveryNoticeDismissed = false;
+      if (state.view !== "create" || !state.draft.editingId) render();
+    }, { remoteOnly: true });
+    persistenceSubscribed = true;
+  }
+
+  async function useLastSavedAfterRecoveryFailure() {
+    if (!pendingDurableSnapshot) return;
+    cacheSnapshot(pendingDurableSnapshot);
+    durableGeneration = Number(pendingDurableSnapshot.metadata?.generation || durableGeneration);
+    pendingDurableSnapshot = null;
+    recoveryResolutionRequired = false;
+    durableReady = true;
+    failedStores.delete("durable");
+    setSaveStatus(failedStores.size ? "issue" : "saved");
+    state.recoveryNoticeDismissed = true;
+    subscribeToPersistenceChanges();
+    try { await initialiseDeletedRecords(); }
+    catch (error) { startupRecovery.push("Recently Deleted could not be refreshed after recovery resolution."); }
+    toast("The last durable state is now in use. Keep the downloaded recovery backup if you still need the newer browser changes.");
+    render();
   }
 
   async function initialisePersistence() {
@@ -396,28 +570,89 @@
       const capabilities = await PERSISTENCE.open();
       const snapshot = await PERSISTENCE.getSnapshot();
       durableGeneration = Number(snapshot.metadata?.generation || 0);
-      const localChecksum = PERSISTENCE.canonicalChecksumSync(state.library);
-      const durableChecksum = PERSISTENCE.canonicalChecksumSync(snapshot.library || []);
-      if (durableChecksum !== localChecksum && snapshot.library?.length && newestLibraryTime(snapshot.library) >= newestLibraryTime(state.library)) {
+      durablePersistent = Boolean(capabilities.persistent);
+      const localBundle = durableBundle();
+      const localChecksum = recoveryRelevantChecksum(localBundle);
+      const durableChecksum = recoveryRelevantChecksum(snapshot);
+      if (durableGeneration > 0) {
+        if (durableChecksum !== localChecksum) {
+          try {
+            await PERSISTENCE.createRecoverySnapshot("Uncommitted browser state before startup reconciliation", localBundle);
+            startupRecovery.push("Uncommitted browser state differed from the durable snapshot. A complete recovery checkpoint was kept before the last committed state was restored.");
+          } catch (error) {
+            pendingDurableSnapshot = snapshot;
+            recoveryResolutionRequired = true;
+            failedStores.add("durable");
+            setSaveStatus("issue");
+            startupRecovery.push("Newer browser changes could not be placed in durable recovery, so they remain on screen and have not been overwritten. Download a recovery backup before choosing the last saved state.");
+            state.recoveryNoticeDismissed = false;
+            render();
+            return;
+          }
+        }
         cacheSnapshot(snapshot);
-        startupRecovery.push("A newer durable library snapshot was restored after this page opened.");
+        if (durableChecksum !== localChecksum) startupRecovery.push("The last committed durable state was restored after this page opened.");
         render();
       }
       durableReady = true;
-      if (durableChecksum !== PERSISTENCE.canonicalChecksumSync(state.library) || durableGeneration === 0) await commitDurableSnapshot();
-      PERSISTENCE.subscribe(event => {
-        if (durableCommitInFlight || !event?.type || event.type === "recovery-created") return;
-        startupRecovery.push("Another Scaffold Seeds tab changed local data. Reload before editing the same resource; no automatic overwrite was made.");
-        state.recoveryNoticeDismissed = false;
-        if (state.view !== "create" || !state.draft.editingId) render();
-      });
-      if (!capabilities.persistent) startupRecovery.push("Durable browser storage is unavailable in this browsing mode. Export a backup before leaving.");
+      if (durableGeneration === 0) await commitDurableSnapshot();
+      await initialiseDeletedRecords();
+      subscribeToPersistenceChanges();
+      if (!durablePersistent) startupRecovery.push("Durable browser storage is unavailable in this browsing mode. Export a backup before leaving.");
     } catch (error) {
       failedStores.add("durable");
       setSaveStatus("issue");
       startupRecovery.push("Durable storage could not be opened. The local cache remains available for recovery and export.");
       render();
     }
+  }
+
+  async function initialiseDeletedRecords() {
+    if (!PERSISTENCE || !durablePersistent) return;
+    const legacy = Array.isArray(state.archives) ? state.archives.filter(item => item?.resource) : [];
+    const remainingLegacy = [];
+    let deleted = await PERSISTENCE.listDeleted();
+    const deletedIds = new Set(deleted.map(item => item.id));
+    for (const record of legacy) {
+      const resourceId = record.resourceId || record.resource?.id;
+      if (!resourceId) { remainingLegacy.push(record); continue; }
+      if (deletedIds.has(resourceId)) continue;
+      if (state.library.some(item => item.id === resourceId)) {
+        remainingLegacy.push(record);
+        startupRecovery.push(`A legacy deleted copy of “${record.resource?.title || "Untitled scaffold"}” shares an ID with a current resource and was retained in the compatibility cache.`);
+        continue;
+      }
+      try {
+        await PERSISTENCE.importDeletedRecord({
+          ...record,
+          resource: { ...record.resource, id: resourceId },
+          workspace: record.workspace ? { ...record.workspace, resourceId } : null
+        }, { requireAbsent: true });
+        deletedIds.add(resourceId);
+      } catch (error) {
+        remainingLegacy.push(record);
+        startupRecovery.push(`A legacy deleted copy of “${record.resource?.title || "Untitled scaffold"}” could not be moved into durable recovery.`);
+      }
+    }
+    deleted = await PERSISTENCE.listDeleted();
+    state.archives = deleted;
+    try {
+      if (remainingLegacy.length) localStorage.setItem(STORAGE.archives, JSON.stringify(remainingLegacy));
+      else localStorage.removeItem(STORAGE.archives);
+    } catch (error) {
+      startupRecovery.push("The legacy Recently Deleted cache could not be updated, so its original browser copy was left untouched.");
+    }
+    const snapshot = await PERSISTENCE.getSnapshot();
+    const latestGeneration = Number(snapshot.metadata?.generation || durableGeneration);
+    if (latestGeneration !== durableGeneration) {
+      if (recoveryRelevantChecksum(snapshot) === recoveryRelevantChecksum(durableBundle())) durableGeneration = latestGeneration;
+      else {
+        const message = "Another Scaffold Seeds tab changed local data during startup. Reload before saving; the current screen was not overwritten.";
+        if (!startupRecovery.includes(message)) startupRecovery.push(message);
+        state.recoveryNoticeDismissed = false;
+      }
+    }
+    render();
   }
 
   function setSaveStatus(status) {
@@ -431,55 +666,74 @@
   }
 
   function normaliseDraft(saved) {
+    const source = saved && typeof saved === "object" && !Array.isArray(saved) ? saved : {};
+    const contentSource = source.content && typeof source.content === "object" && !Array.isArray(source.content) ? source.content : {};
+    const diagramSource = source.diagram && typeof source.diagram === "object" && !Array.isArray(source.diagram) ? source.diagram : {};
+    const clean = (value, fallback = "", maximum = 12000) => typeof value === "string" ? value.slice(0, maximum) : typeof value === "number" && Number.isFinite(value) ? String(value).slice(0, maximum) : fallback;
+    const strings = (value, maximumItems = 30, maximumLength = 2000) => Array.isArray(value) ? value.slice(0, maximumItems).map(item => clean(item, "", maximumLength).trim()).filter(Boolean) : [];
+    const year = DATA.years.includes(source.year) ? source.year : "Year 4";
+    const subject = DATA.subjects.some(item => item.id === source.subject) ? source.subject : "mathematics";
+    const stage = DATA.stages.some(item => item.id === source.stage) ? source.stage : defaultSettings.defaultStage;
+    const phase = DATA.lessonPhases.includes(source.phase) ? source.phase : "Guided practice";
+    const diagramType = DATA.build5?.diagramTypes?.includes?.(contentSource.diagramType) || ["", "number-line", "part-whole", "place-value", "array", "bar-model", "fraction-strip", "timeline", "causal-chain", "flowchart", "classification-tree", "concept-map", "cycle"].includes(contentSource.diagramType) ? contentSource.diagramType : "";
+    const growthStages = strings(source.growthStages, 4, 30).filter(id => DATA.stages.some(stageItem => stageItem.id === id));
     return {
-      year: saved?.year || "Year 4",
-      subject: saved?.subject || "mathematics",
-      topic: saved?.topic || "Fractions",
-      objective: saved?.objective || "Recognise and show equivalent fractions",
-      phase: saved?.phase || "Guided practice",
-      expectedOutcome: saved?.expectedOutcome || "Pupils complete the core subject decision and explain how it supports the learning objective.",
-      situation: saved?.situation || "",
-      selectedBarriers: saved?.selectedBarriers || [],
-      analysis: saved?.analysis || [],
-      recommendations: saved?.recommendations || [],
-      engineId: saved?.engineId || "",
-      preferredEngine: saved?.preferredEngine || "",
-      stage: saved?.stage || defaultSettings.defaultStage,
-      title: saved?.title || "",
-      vocabulary: saved?.vocabulary || "",
-      misconception: saved?.misconception || "",
-      intention: saved?.intention || "Keep the core thinking with pupils while making the route into the task clear.",
-      essentialThinking: saved?.essentialThinking || "",
-      pupilAction: saved?.pupilAction || "Use the scaffold to enter the task, then make and explain the central subject decision.",
-      removalPathway: saved?.removalPathway || "Remove the model first, then reduce prompts, then retain only one pupil-owned self-check.",
-      customBarrier: saved?.customBarrier || "",
-      tags: saved?.tags || "",
-      familyId: saved?.familyId || "",
-      representation: saved?.representation || "",
+      year,
+      subject,
+      topic: clean(source.topic, "Fractions", 180),
+      objective: clean(source.objective, "Recognise and show equivalent fractions", 500),
+      phase,
+      expectedOutcome: clean(source.expectedOutcome, "Pupils complete the core subject decision and explain how it supports the learning objective.", 1000),
+      situation: clean(source.situation, "", 1200),
+      selectedBarriers: strings(source.selectedBarriers, 6, 100).filter(id => DATA.barriers.some(item => item.id === id)),
+      analysis: Array.isArray(source.analysis) ? source.analysis.filter(item => item && typeof item === "object").slice(0, 20) : [],
+      recommendations: strings(source.recommendations, 10, 120).filter(id => DATA.engines.some(item => item.id === id)),
+      engineId: DATA.engines.some(item => item.id === source.engineId) ? source.engineId : "",
+      preferredEngine: DATA.engines.some(item => item.id === source.preferredEngine) ? source.preferredEngine : "",
+      stage,
+      title: clean(source.title, "", 140),
+      vocabulary: clean(source.vocabulary, "", 2000),
+      misconception: clean(source.misconception, "", 1600),
+      intention: clean(source.intention, "Keep the core thinking with pupils while making the route into the task clear.", 1200),
+      essentialThinking: clean(source.essentialThinking, "", 1200),
+      pupilAction: clean(source.pupilAction, "Use the scaffold to enter the task, then make and explain the central subject decision.", 1200),
+      removalPathway: clean(source.removalPathway, "Remove the model first, then reduce prompts, then retain only one pupil-owned self-check.", 1200),
+      customBarrier: clean(source.customBarrier, "", 600),
+      tags: clean(source.tags, "", 1000),
+      familyId: DATA.scaffoldFamilies.some(item => item.id === source.familyId) ? source.familyId : "",
+      representation: clean(source.representation, "", 500),
       content: {
-        instruction: saved?.content?.instruction || "",
-        subInstruction: saved?.content?.subInstruction || "",
-        example: saved?.content?.example || "",
-        prompts: saved?.content?.prompts || [],
-        vocabulary: saved?.content?.vocabulary || [],
-        misconception: saved?.content?.misconception || "",
-        teacherNotes: saved?.content?.teacherNotes || "",
-        oralPrompt: saved?.content?.oralPrompt || "",
-        checkPrompt: saved?.content?.checkPrompt || "",
-        independencePrompt: saved?.content?.independencePrompt || "",
-        diagramType: saved?.content?.diagramType || "",
-        diagramLabels: saved?.content?.diagramLabels || [],
-        responseSpace: saved?.content?.responseSpace || "standard",
-        instructionMode: saved?.content?.instructionMode || "standard",
-        density: saved?.content?.density || defaultSettings.preferredDensity,
-        oralRehearsal: saved?.content?.oralRehearsal ?? false,
-        hiddenSections: saved?.content?.hiddenSections || []
+        ...contentSource,
+        instruction: clean(contentSource.instruction),
+        subInstruction: clean(contentSource.subInstruction),
+        example: clean(contentSource.example, "", 12000),
+        partialExample: clean(contentSource.partialExample, "", 12000),
+        prompts: strings(contentSource.prompts, 20, 3000),
+        coreTask: clean(contentSource.coreTask || source.coreTask, "", 3000),
+        vocabulary: strings(contentSource.vocabulary, 30, 300),
+        misconception: clean(contentSource.misconception, "", 1600),
+        teacherNotes: clean(contentSource.teacherNotes, "", 8000),
+        oralPrompt: clean(contentSource.oralPrompt, "", 3000),
+        checkPrompt: clean(contentSource.checkPrompt, "", 3000),
+        independencePrompt: clean(contentSource.independencePrompt, "", 3000),
+        diagramType,
+        diagramLabels: strings(contentSource.diagramLabels, 24, 200),
+        responseSpace: ["standard", "large", "oral"].includes(contentSource.responseSpace) ? contentSource.responseSpace : "standard",
+        instructionMode: DATA.build3.instructionModes.includes(contentSource.instructionMode) ? contentSource.instructionMode : "standard",
+        density: DATA.build3.densityModes.includes(contentSource.density) ? contentSource.density : defaultSettings.preferredDensity,
+        oralRehearsal: Boolean(contentSource.oralRehearsal),
+        hiddenSections: strings(contentSource.hiddenSections, 10, 80).filter(id => ["example", "vocabulary", "oral"].includes(id))
       },
-      diagram: saved?.diagram || { type: "", labels: [], values: [] },
-      format: saved?.format || "workpage",
-      growthStages: saved?.growthStages || ["seed", "sprout", "growth", "independent"],
-      teacherNotes: saved?.teacherNotes || "",
-      editingId: saved?.editingId || null
+      diagram: {
+        ...diagramSource,
+        type: diagramType || (typeof diagramSource.type === "string" ? diagramSource.type : ""),
+        labels: strings(diagramSource.labels, 24, 200),
+        values: Array.isArray(diagramSource.values) ? diagramSource.values.map(item => typeof item === "string" ? item.trim() : item).filter(item => item !== "").map(Number).filter(Number.isFinite).slice(0, 24) : []
+      },
+      format: DATA.printFormats.some(item => item.id === source.format) ? source.format : "workpage",
+      growthStages: growthStages.length ? growthStages : ["seed", "sprout", "growth", "independent"],
+      teacherNotes: clean(source.teacherNotes, "", 8000),
+      editingId: typeof source.editingId === "string" && source.editingId ? source.editingId.slice(0, 160) : null
     };
   }
 
@@ -558,7 +812,8 @@
     const vocabulary = [...new Set([...(entry?.vocabulary || []), ...(profile.vocabulary || [])])].slice(0, 8);
     const misconceptions = [...new Set([...(entry?.misconceptions || []), ...(profile.misconceptions || [])])];
     const preferredFamilies = profile.families.filter(id => DATA.scaffoldFamilies.some(family => family.id === id));
-    return { subject, brain, profile, entry, vocabulary, misconceptions, preferredFamilies, representations: profile.representations || [] };
+    const metadata = DATA.curriculumMetadataFor?.(draft.subject, entry, draft.year) || { mapped: Boolean(entry), status: "local curriculum context", sourceVersion: "Teacher-selected curriculum source", developmentalFocus: "" };
+    return { subject, brain, profile, entry, metadata, vocabulary, misconceptions, preferredFamilies, representations: profile.representations || [] };
   }
 
   function curriculumEntries(subjectId = state.draft.subject, year = state.draft.year) {
@@ -566,7 +821,8 @@
   }
 
   function currentEntry(draft = state.draft) {
-    return subjectById(draft.subject).entries.find(entry => entry.title === draft.topic && entry.years.includes(draft.year)) || curriculumEntries(draft.subject, draft.year)[0];
+    const exact = subjectById(draft.subject).entries.find(entry => entry.title === draft.topic && entry.years.includes(draft.year));
+    return exact || (String(draft.topic || "").trim() ? null : curriculumEntries(draft.subject, draft.year)[0]);
   }
 
   function formatDate(dateValue) {
@@ -619,18 +875,44 @@
 
   function render() {
     const renderers = { home: renderHome, create: renderCreate, library: renderLibrary, knowledge: renderKnowledge, ai: renderAIStudio, print: renderPrintStudio, settings: renderSettings };
-    const recovery = startupRecovery.length && !state.recoveryNoticeDismissed ? `<aside class="recovery-banner" role="status"><div><strong>Recovery notice</strong><p>${esc(startupRecovery[0])}${startupRecovery.length > 1 ? ` ${startupRecovery.length - 1} other record${startupRecovery.length === 2 ? "" : "s"} also need review.` : ""}</p></div><button class="button button-compact" data-action="dismiss-recovery">Dismiss</button></aside>` : "";
+    const disclosureIdentity = item => `${item.className}|${(item.querySelector("summary")?.textContent.trim() || "").replace(/\s*·\s*\d+$/, "")}`;
+    const sameView = lastRenderedView === state.view;
+    const openDisclosures = sameView ? new Set([...main.querySelectorAll("details[open]")].map(disclosureIdentity)) : new Set();
+    const activeElement = sameView && main.contains(document.activeElement) ? document.activeElement : null;
+    const focusId = activeElement?.id || "";
+    const focusDatasetEntries = activeElement?.dataset ? Object.entries(activeElement.dataset).sort(([a], [b]) => a.localeCompare(b)) : [];
+    const focusDataset = focusDatasetEntries.length ? JSON.stringify(Object.fromEntries(focusDatasetEntries)) : "";
+    const stepChanged = state.view === "create" && lastRenderedView === "create" && lastRenderedCreateStep !== state.createStep;
+    const recoveryActions = recoveryResolutionRequired
+      ? '<div class="recovery-actions"><button class="button button-compact" data-action="download-recovery">Download recovery</button><button class="button button-compact" data-action="use-last-saved">Use last saved</button></div>'
+      : '<button class="button button-compact" data-action="dismiss-recovery">Dismiss</button>';
+    const recovery = startupRecovery.length && !state.recoveryNoticeDismissed ? `<aside class="recovery-banner" role="${recoveryResolutionRequired ? "alert" : "status"}"><div><strong>Recovery notice</strong><p>${esc(startupRecovery[0])}${startupRecovery.length > 1 ? ` ${startupRecovery.length - 1} other record${startupRecovery.length === 2 ? "" : "s"} also need review.` : ""}</p></div>${recoveryActions}</aside>` : "";
     main.innerHTML = `${recovery}<div class="view-enter">${renderers[state.view]()}</div>`;
     hydrateIcons(main);
+    if (sameView) main.querySelectorAll("details").forEach(item => {
+      if (openDisclosures.has(disclosureIdentity(item))) item.open = true;
+    });
     main.querySelectorAll('[role="tablist"]').forEach(list => {
       const tabs = [...list.querySelectorAll('[role="tab"]')];
       tabs.forEach((tab, index) => { tab.tabIndex = tab.getAttribute("aria-selected") === "true" || (!tabs.some(item => item.getAttribute("aria-selected") === "true") && index === 0) ? 0 : -1; });
     });
+    if (stepChanged) requestAnimationFrame(() => main.querySelector(".create-card-head h2")?.focus({ preventScroll: true }));
+    else if (activeElement) requestAnimationFrame(() => {
+      const byId = focusId ? document.getElementById(focusId) : null;
+      const byDataset = !byId && focusDataset ? [...main.querySelectorAll("button, input, select, textarea, summary, [tabindex]")].find(item => JSON.stringify(Object.fromEntries(Object.entries(item.dataset || {}).sort(([a], [b]) => a.localeCompare(b)))) === focusDataset) : null;
+      (byId || byDataset)?.focus({ preventScroll: true });
+    });
+    lastRenderedView = state.view;
+    lastRenderedCreateStep = state.createStep;
   }
 
   function openSidebar() {
     sidebar.classList.add("is-open");
     scrim.hidden = false;
+    sidebar.inert = false;
+    sidebar.removeAttribute("aria-hidden");
+    main.inert = true;
+    document.body.style.overflow = "hidden";
     menuButton.setAttribute("aria-expanded", "true");
     menuButton.setAttribute("aria-label", "Close navigation");
     requestAnimationFrame(() => sidebar.querySelector(".nav-item.is-active, .nav-item")?.focus());
@@ -642,7 +924,35 @@
     scrim.hidden = true;
     menuButton.setAttribute("aria-expanded", "false");
     menuButton.setAttribute("aria-label", "Open navigation");
+    main.inert = false;
+    if (window.matchMedia("(max-width: 820px)").matches) {
+      sidebar.inert = true;
+      sidebar.setAttribute("aria-hidden", "true");
+    } else {
+      sidebar.inert = false;
+      sidebar.removeAttribute("aria-hidden");
+    }
+    if (modalLayer.hidden) document.body.style.overflow = "";
     if (wasOpen && restoreFocus) menuButton.focus();
+  }
+
+  function syncSidebarAccessibility() {
+    const mobile = window.matchMedia("(max-width: 820px)").matches;
+    if (!mobile) {
+      sidebar.classList.remove("is-open");
+      scrim.hidden = true;
+      sidebar.inert = false;
+      sidebar.removeAttribute("aria-hidden");
+      main.inert = false;
+      menuButton.setAttribute("aria-expanded", "false");
+      menuButton.setAttribute("aria-label", "Open navigation");
+      if (modalLayer.hidden) document.body.style.overflow = "";
+      return;
+    }
+    const open = sidebar.classList.contains("is-open");
+    sidebar.inert = !open;
+    sidebar.toggleAttribute("aria-hidden", !open);
+    main.inert = open;
   }
 
   function newScaffold(preset = {}) {
@@ -650,11 +960,46 @@
     state.activeScaffold = null;
     resetAIWorkspace({ ...state.draft, id: "", engineId: state.draft.engineId || DATA.engines[0].id });
     state.createStep = 0;
+    state.compareStages = false;
     saveDraft();
     navigate("create");
   }
 
+  function hasResumableDraft() {
+    return Boolean(state.draft.editingId || state.draft.engineId || state.draft.situation.trim() || state.draft.title.trim() || state.draft.content.instruction.trim());
+  }
+
+  function inferDraftStep() {
+    if (state.draft.editingId && state.library.some(item => item.id === state.draft.editingId)) return 3;
+    if (state.draft.content.instruction || state.draft.title) return 2;
+    if (state.draft.engineId || state.draft.selectedBarriers.length) return 1;
+    return 0;
+  }
+
+  function resumeDraft() {
+    if (!hasResumableDraft()) { newScaffold(); return; }
+    state.activeScaffold = state.draft.editingId ? state.library.find(item => item.id === state.draft.editingId) || null : null;
+    state.createStep = inferDraftStep();
+    state.compareStages = false;
+    navigate("create");
+  }
+
+  function selectEngine(id) {
+    const engine = DATA.engines.find(item => item.id === id);
+    if (!engine || state.draft.engineId === id) return false;
+    const previous = engineById(state.draft.engineId);
+    if (state.draft.title === `${state.draft.topic}: ${previous.name}`) state.draft.title = "";
+    state.draft.engineId = id;
+    state.draft.preferredEngine = "";
+    state.draft.familyId = engine.family;
+    state.draft.content = { ...normaliseDraft(null).content };
+    state.draft.diagram = { type: "", labels: [], values: [] };
+    invalidateAIVerification();
+    return true;
+  }
+
   function renderHome() {
+    const resumable = hasResumableDraft();
     const recent = [...state.library]
       .filter(item => !item.archived)
       .sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt))
@@ -674,7 +1019,7 @@
           <span class="eyebrow">Temporary support · lasting independence</span>
           <h2 id="home-heading">Where are pupils <br><em>getting stuck?</em></h2>
           <p>Scaffold Seeds finds the smallest useful support, protects the thinking and plans how that support will disappear.</p>
-          <button class="button button-primary home-primary" data-action="new-scaffold"><span data-icon="create"></span> Create a scaffold</button>
+          <div class="home-primary-actions"><button class="button button-primary home-primary" data-action="${resumable ? "resume-draft" : "new-scaffold"}"><span data-icon="create"></span> ${resumable ? "Continue scaffold" : "Create a scaffold"}</button>${resumable ? '<button class="text-link" data-action="new-scaffold">Start another</button>' : ""}</div>
         </div>
         <div class="hero-principle" aria-label="Scaffold Seeds principle">
           <span>01</span><p>Notice the barrier.</p>
@@ -706,7 +1051,7 @@
   }
 
   function createHead(number, title, copy) {
-    return `<div class="create-card-head"><span class="step-number">${number}</span><div><h2>${esc(title)}</h2><p>${esc(copy)}</p></div></div>`;
+    return `<div class="create-card-head"><span class="step-number">${number}</span><div><h2 tabindex="-1">${esc(title)}</h2><p>${esc(copy)}</p></div></div>`;
   }
 
   function stepFooter({ back = true, nextLabel = "Continue", nextAction = "create-next", extra = "" } = {}) {
@@ -781,7 +1126,7 @@
         <section class="protected-thinking-card compact-protection">
           <span class="eyebrow">The thinking stays with pupils</span>
           <blockquote>${esc(state.draft.essentialThinking)}</blockquote>
-          <details><summary>Edit this sentence</summary><textarea data-draft-field="essentialThinking" rows="2">${esc(state.draft.essentialThinking)}</textarea></details>
+          <details><summary>Edit this sentence</summary><label class="visually-hidden" for="essential-thinking">Protected pupil thinking</label><textarea id="essential-thinking" data-draft-field="essentialThinking" rows="2">${esc(state.draft.essentialThinking)}</textarea></details>
         </section>
 
         <section class="decision-block">
@@ -814,6 +1159,7 @@
       const total = type === "bar-model" ? `<div class="form-field"><label for="diagram-total">Stated whole <small>— optional check</small></label><input id="diagram-total" class="input" inputmode="decimal" data-diagram-field="total" value="${esc(diagram.total ?? "")}"></div>` : "";
       return `${values}${total}<p class="diagram-check-note">${type === "timeline" ? "Supplied values create proportional spacing; without them the timeline is marked schematic." : "When values are supplied, Scaffold Seeds checks the numerical relationship rather than only the shape."}</p>`;
     }
+    if (type === "place-value") return `<div class="form-field"><label for="diagram-value">Represented whole number <small>— shown and checked by place</small></label><input id="diagram-value" class="input" inputmode="numeric" pattern="[0-9]*" data-diagram-field="value" value="${esc(diagram.value ?? "")}"></div><p class="diagram-check-note">The chart uses only the columns needed for this number. Leave blank only when you deliberately need a schematic template.</p>`;
     if (type === "fraction-strip") return `<div class="form-grid compact-fields"><div class="form-field"><label for="diagram-parts">Equal parts</label><input id="diagram-parts" class="input" type="number" min="2" max="24" data-diagram-field="parts" value="${esc(diagram.parts || 4)}"></div><div class="form-field"><label for="diagram-numerator">Shaded parts</label><input id="diagram-numerator" class="input" type="number" min="0" max="24" data-diagram-field="numerator" value="${esc(diagram.numerator ?? 0)}"></div></div>`;
     if (type === "array") return `<div class="form-grid compact-fields"><div class="form-field"><label for="diagram-rows">Rows</label><input id="diagram-rows" class="input" type="number" min="1" max="12" data-diagram-field="rows" value="${esc(diagram.rows || 3)}"></div><div class="form-field"><label for="diagram-columns">Columns</label><input id="diagram-columns" class="input" type="number" min="1" max="12" data-diagram-field="columns" value="${esc(diagram.columns || 5)}"></div><div class="form-field"><label for="diagram-total">Stated total <small>— optional check</small></label><input id="diagram-total" class="input" inputmode="numeric" data-diagram-field="total" value="${esc(diagram.total ?? "")}"></div></div>`;
     return `<p class="diagram-check-note">This diagram is checked for structure and label length. Subject accuracy still requires teacher review.</p>`;
@@ -859,7 +1205,7 @@
 
     return `${createHead(3, "Shape the resource", `${engine.name} is already built. Edit only what tomorrow's pupils need.`)}
       <div class="create-card-body designer-shell">
-        <div class="designer-toolbar"><span class="toolbar-label">Support now</span><div class="compact-stage-path">${DATA.stages.map(stage => `<button class="${stage.id === state.draft.stage ? "is-active" : ""}" data-action="choose-stage" data-id="${stage.id}"><span>${stage.glyph}</span>${esc(stage.name)}</button>`).join("")}</div></div>
+        <div class="designer-toolbar"><span class="toolbar-label">Support now</span><div class="compact-stage-path" role="group" aria-label="Current support stage">${DATA.stages.map(stage => `<button class="${stage.id === state.draft.stage ? "is-active" : ""}" data-action="choose-stage" data-id="${stage.id}" aria-pressed="${stage.id === state.draft.stage}"><span>${stage.glyph}</span>${esc(stage.name)}</button>`).join("")}</div></div>
         <div class="live-designer-grid">
           <aside class="designer-controls" aria-label="Resource controls">
             <div class="design-identity" style="--subject-colour:${intelligence.subject.colour}"><div><span class="eyebrow">${esc(familyById(engine.family).name)}</span><h3>${esc(engine.name)}</h3></div><p>${esc(engine.preserves)}</p></div>
@@ -872,7 +1218,7 @@
             </div></details>
             <details><summary>Example &amp; access</summary><div class="designer-control-body">
               <div class="form-field"><label for="content-example">Example or partial example</label><textarea id="content-example" data-content-field="example" rows="3">${esc(state.draft.content.example)}</textarea></div>
-              <div class="form-field"><label>Response</label><select data-content-field="responseSpace"><option value="standard" ${state.draft.content.responseSpace === "standard" ? "selected" : ""}>Standard writing space</option><option value="large" ${state.draft.content.responseSpace === "large" ? "selected" : ""}>Larger writing space</option><option value="oral" ${state.draft.content.responseSpace === "oral" ? "selected" : ""}>Oral response</option></select></div>
+              <div class="form-field"><label for="response-space">Response</label><select id="response-space" data-content-field="responseSpace"><option value="standard" ${state.draft.content.responseSpace === "standard" ? "selected" : ""}>Standard writing space</option><option value="large" ${state.draft.content.responseSpace === "large" ? "selected" : ""}>Larger writing space</option><option value="oral" ${state.draft.content.responseSpace === "oral" ? "selected" : ""}>Oral response</option></select></div>
               <label class="check-row"><input type="checkbox" data-content-toggle="oralRehearsal" ${state.draft.content.oralRehearsal ? "checked" : ""}><span>Add oral rehearsal</span></label>
             </div></details>
             <details><summary>Diagram</summary><div class="designer-control-body">
@@ -901,8 +1247,8 @@
 
     return `${createHead(4, "Use it", "The scaffold is ready. Save it, print it, or make one optional external contribution.")}
       <div class="create-card-body finish-step">
-        <div class="review-stage-switch"><div><span class="eyebrow">Support now</span><p>Move only when pupils can take over the next decision.</p></div><div class="compact-stage-path">${DATA.stages.map(stage => `<button class="${stage.id === scaffold.stage ? "is-active" : ""}" data-action="choose-stage" data-id="${stage.id}"><span>${stage.glyph}</span>${esc(stage.name)}</button>`).join("")}</div></div>
-        ${state.compareStages ? `<div class="stage-compare-grid">${DATA.stages.map(stage => `<section><div class="stage-compare-head"><strong>${stage.name}</strong><span>${stage.support}</span></div><div class="stage-mini-paper">${renderResourceDocument(stageSet[stage.id])}</div></section>`).join("")}</div>` : `<div class="preview-workspace finish-workspace">
+        <div class="review-stage-switch"><div><span class="eyebrow">Support now</span><p>Move only when pupils can take over the next decision.</p></div><div class="compact-stage-path" role="group" aria-label="Current support stage">${DATA.stages.map(stage => `<button class="${stage.id === scaffold.stage ? "is-active" : ""}" data-action="choose-stage" data-id="${stage.id}" aria-pressed="${stage.id === scaffold.stage}"><span>${stage.glyph}</span>${esc(stage.name)}</button>`).join("")}</div></div>
+        ${state.compareStages ? `<div class="stage-compare-view"><button class="button button-compact" data-action="toggle-stage-compare">← Return to use actions</button><div class="stage-compare-grid">${DATA.stages.map(stage => `<section><div class="stage-compare-head"><strong>${stage.name}</strong><span>${stage.support}</span></div><div class="stage-mini-paper">${renderResourceDocument(stageSet[stage.id])}</div></section>`).join("")}</div></div>` : `<div class="preview-workspace finish-workspace">
           <div class="paper-wrap">${renderResourceDocument({ ...scaffold, stage: state.draft.stage, content: state.draft.content })}</div>
           <aside class="finish-actions">
             <button class="button button-primary" data-action="save-scaffold"><span data-icon="check"></span> Save to library</button>
@@ -1084,6 +1430,10 @@
       versions: existing?.versions || [],
       reflection: existing?.reflection || null,
       reflections: existing?.reflections || (existing?.reflection ? [existing.reflection] : []),
+      fadeHistory: existing?.fadeHistory || [],
+      ai: existing?.ai || null,
+      sources: existing?.sources || [],
+      assets: existing?.assets || [],
       lastPrintedAt: existing?.lastPrintedAt || null
     };
   }
@@ -1161,7 +1511,7 @@
 
     return `
       <div class="page-heading library-heading"><div><span class="eyebrow">Saved on this device</span><h2>${filters.archived ? "Archive" : "Library"}</h2><p>Find a resource, open it and get back to the lesson.</p></div><button class="button button-primary" data-action="new-scaffold"><span data-icon="plus"></span> New scaffold</button></div>
-      <div class="library-view-tabs"><button class="${!filters.archived ? "is-active" : ""}" data-action="library-view" data-id="active">Current <span>${state.library.filter(item => !item.archived).length}</span></button><button class="${filters.archived ? "is-active" : ""}" data-action="library-view" data-id="archived">Archive <span>${state.library.filter(item => item.archived).length}</span></button></div>
+      <div class="library-view-tabs" role="group" aria-label="Library view"><button class="${!filters.archived ? "is-active" : ""}" data-action="library-view" data-id="active" aria-pressed="${!filters.archived}">Current <span>${state.library.filter(item => !item.archived).length}</span></button><button class="${filters.archived ? "is-active" : ""}" data-action="library-view" data-id="archived" aria-pressed="${filters.archived}">Archive <span>${state.library.filter(item => item.archived).length}</span></button></div>
       ${state.librarySelection.length ? `<div class="library-batch"><strong>${state.librarySelection.length} selected</strong><button class="button button-compact" data-action="batch-export">Export</button><button class="button button-compact" data-action="batch-reviewed">Mark reviewed</button><button class="button button-compact" data-action="batch-archive">${filters.archived ? "Restore" : "Archive"}</button><button class="text-link" data-action="batch-clear">Clear</button></div>` : ""}
       <div class="library-find">
         <label class="search-field"><span data-icon="search"></span><input class="input" id="library-search" data-library-filter="query" value="${esc(filters.query)}" placeholder="Search your library"><span class="visually-hidden">Search titles, objectives and tags</span></label>
@@ -1227,7 +1577,8 @@
   function ensureAIWorkspace(scaffold = activeForAI(), force = false) {
     if (!scaffold) return null;
     if (force || !state.aiWorkspace || state.aiWorkspace.resourceId !== scaffold.id) {
-      const saved = readStore(`${STORAGE.aiWorkspace}.${scaffold.id}`, null)
+      const saved = durableAIWorkspaces[scaffold.id]
+        || readStore(`${STORAGE.aiWorkspace}.${scaffold.id}`, null)
         || (!force && state.aiWorkspace?.resourceId === scaffold.id ? state.aiWorkspace : null);
       state.aiWorkspace = safeAIWorkspace(scaffold, saved);
       state.aiTaskFamily = AI.taskById(state.aiWorkspace.options.taskId).family;
@@ -1451,17 +1802,31 @@
     return result;
   }
 
+  function currentAIVerificationFingerprint(scaffold = activeForAI(), workspace = state.aiWorkspace) {
+    if (!scaffold || !workspace?.parsed) return "";
+    return AI.verificationFingerprint(scaffold, workspace.parsed, workspace.sourceRecords || [], workspace.options || {});
+  }
+
+  function invalidateAIVerification(workspace = state.aiWorkspace) {
+    if (!workspace) return;
+    workspace.verification = null;
+    workspace.approvalChecked = false;
+    workspace.appliedAt = null;
+  }
+
   function renderAIVerifyPhase(scaffold, workspace) {
     if (!workspace.parsed) return `<div class="empty-help"><h4>No content to verify</h4><button class="button" data-action="ai-phase" data-id="import">Import a response</button></div>`;
+    if (workspace.verification?.contentChecksum !== currentAIVerificationFingerprint(scaffold, workspace)) invalidateAIVerification(workspace);
     if (!workspace.verification) {
       workspace.verification = VERIFY.verify(scaffold, acceptedImportForVerification(workspace.parsed, workspace.sourceRecords), { ...workspace.options, taskId: workspace.options.taskId, reviewLevel: workspace.options.reviewLevel });
+      workspace.verification.contentChecksum = currentAIVerificationFingerprint(scaffold, workspace);
       saveAIWorkspace();
     }
     const result = workspace.verification;
     recomputeVerificationSummary(result);
     const acceptedCount = Object.values(AI.acceptedContent(workspace.parsed)).flat().length;
     const canApply = workspace.approvalChecked && result.canApprove && acceptedCount > 0;
-    const preview = acceptedCount ? AI.applyAccepted(scaffold, workspace.parsed, { verification: result, prompt: workspace.prompt, approved: false, includeRaw: false }).resource : scaffold;
+    const preview = acceptedCount ? AI.applyAccepted(scaffold, workspace.parsed, { verification: result, prompt: workspace.prompt, approved: false, includeRaw: false, sourceRecords: workspace.sourceRecords, verificationOptions: workspace.options }).resource : scaffold;
     const dimensions = [...new Set(result.findings.map(item => item.dimension))];
     return `<div class="ai-phase-head"><span class="phase-number">05</span><div><span class="eyebrow">Verify and rebuild</span><h3>Local checks, honest limits, human judgement</h3><p>${esc(result.methodNote)}</p></div></div>
       <section class="verification-summary status-${result.blocking ? "block" : result.important ? "warn" : "ready"}"><div><span>${result.blocking ? "!" : result.important ? "!" : "✓"}</span><div><strong>${esc(result.status)}</strong><small>${esc(titleCase(result.reviewLevel))} review · ${acceptedCount} accepted item${acceptedCount === 1 ? "" : "s"}</small></div></div><dl><div><dt>Do not use yet</dt><dd>${result.blocking}</dd></div><div><dt>Important</dt><dd>${result.important}</dd></div><div><dt>Review</dt><dd>${result.review}</dd></div><div><dt>Locally checked</dt><dd>${result.findings.filter(item => item.validation === "local" || item.validation === "calculation" || item.validation === "structure").length}</dd></div></dl></section>
@@ -1513,7 +1878,7 @@
     state.aiWorkspace.rawPreservedAt = new Date().toISOString();
     state.aiWorkspace.parsed = AI.parseImport(raw, state.aiWorkspace.options.taskId, mode);
     state.aiWorkspace.sourceRecords = state.aiWorkspace.parsed.sections.filter(section => section.id === "sources").flatMap(section => section.items).map(item => AI.makeSourceRecord(item.text));
-    state.aiWorkspace.verification = null;
+    invalidateAIVerification(state.aiWorkspace);
     updateAIResourceStatus("response-imported");
     saveAIWorkspace();
     toast("Raw response preserved and organised into reviewable sections.");
@@ -1529,6 +1894,8 @@
       toast(`${undecided.length} undecided item${undecided.length === 1 ? " was" : "s were"} left out, not accepted silently.`);
     }
     workspace.verification = VERIFY.verify(activeForAI(), acceptedImportForVerification(workspace.parsed, workspace.sourceRecords), { ...workspace.options, taskId: workspace.options.taskId, reviewLevel: workspace.options.reviewLevel });
+    workspace.verification.contentChecksum = currentAIVerificationFingerprint(activeForAI(), workspace);
+    workspace.approvalChecked = false;
     workspace.phase = "verify";
     updateAIResourceStatus(workspace.verification.blocking || workspace.verification.important ? "warnings-unresolved" : "review-required", { lastVerification: workspace.verification });
     saveAIWorkspace();
@@ -1538,13 +1905,19 @@
   function applyAIContent() {
     const scaffold = activeForAI();
     const workspace = state.aiWorkspace;
+    if (!workspace.verification || workspace.verification.contentChecksum !== currentAIVerificationFingerprint(scaffold, workspace)) {
+      invalidateAIVerification(workspace);
+      saveAIWorkspace();
+      toast("The scaffold or accepted content changed. Run verification again, then approve the exact current version.");
+      render();
+      return;
+    }
     recomputeVerificationSummary(workspace.verification);
     if (!workspace.approvalChecked || workspace.verification.blocking) { toast("Complete the human approval gate and resolve serious findings first."); return; }
     const index = state.library.findIndex(item => item.id === scaffold.id);
     const original = index >= 0 ? state.library[index] : scaffold;
     const checkpoint = versionSnapshot(original, `Before ${workspace.roundName || AI.taskById(workspace.options.taskId).name}`);
-    const applied = AI.applyAccepted(original, workspace.parsed, { verification: workspace.verification, prompt: workspace.prompt, approved: true, approvalScope: workspace.approvalScope, roundName: workspace.roundName, includeRaw: true });
-    if (workspace.parsed.localSuggestion?.format) applied.resource.format = workspace.parsed.localSuggestion.format;
+    const applied = AI.applyAccepted(original, workspace.parsed, { verification: workspace.verification, prompt: workspace.prompt, approved: true, approvalScope: workspace.approvalScope, roundName: workspace.roundName, includeRaw: true, sourceRecords: workspace.sourceRecords, verificationOptions: workspace.options });
     applied.resource.versions = [checkpoint, ...(original.versions || [])].slice(0, 20);
     if (workspace.image) applied.resource.assets = [{ ...workspace.image, id: workspace.image.id || uid(), addedAt: new Date().toISOString() }, ...(original.assets || [])].slice(0, 8);
     if (workspace.sourceRecords?.length) applied.resource.sources = workspace.sourceRecords.map(record => ({ ...record }));
@@ -1638,18 +2011,23 @@
   function printPromptSet(scaffold) {
     const intelligence = curriculumIntelligence(scaffold);
     const stage = DATA.stages.find(item => item.id === scaffold.stage) || DATA.stages[1];
-    const sourceSteps = scaffold.smallSteps?.length ? scaffold.smallSteps : intelligence.profile.smallSteps;
-    const visibleCount = { seed: 6, sprout: 4, growth: 2, independent: 1 }[scaffold.stage] || 4;
-    const steps = sourceSteps.slice(0, visibleCount);
+    const normalised = RESOURCE.normalise(scaffold);
+    const content = normalised.content;
+    const coreTask = RESOURCE.coreTaskFor(normalised, content);
+    const visible = RESOURCE.stagePromptSet(normalised, content);
+    const supportSteps = visible.filter(item => item !== coreTask);
+    const steps = [...supportSteps, coreTask].filter(Boolean);
     const questions = scaffold.teacherQuestions?.length ? scaffold.teacherQuestions : intelligence.profile.questions;
     return {
       intelligence,
       stage,
+      content,
+      coreTask,
       steps,
       questions,
-      selfPrompt: questions[0] || "What matters here, and how will I check it?",
+      selfPrompt: content.independencePrompt || "What is the decision I need to make, and how will I check it?",
       misconception: scaffold.misconception || intelligence.misconceptions[0],
-      vocabulary: (scaffold.content?.vocabulary?.length ? scaffold.content.vocabulary : scaffold.vocabulary || intelligence.vocabulary).slice(0, 6)
+      vocabulary: (content.vocabulary?.length ? content.vocabulary : scaffold.vocabulary || intelligence.vocabulary).slice(0, 6)
     };
   }
 
@@ -1665,13 +2043,16 @@
     const prompts = printPromptSet(scaffold);
     const content = RESOURCE.normalise(scaffold).content;
     const independent = scaffold.stage === "independent";
-    const promptLimit = state.print.paper === "a5" ? 3 : 4;
-    const visiblePrompts = content.prompts.slice(0, promptLimit);
+    const promptLimit = 4;
+    const stagePrompts = RESOURCE.stagePromptSet(scaffold, content);
+    const coreTask = RESOURCE.coreTaskFor(scaffold, content);
+    const visiblePrompts = independent ? [coreTask] : [...stagePrompts.filter(item => item !== coreTask).slice(0, Math.max(0, promptLimit - 1)), coreTask].filter(Boolean);
     const diagram = content.diagramType && !independent ? `<div class="compact-sheet-diagram">${RESOURCE.renderDiagram(content.diagramType, scaffold.diagram || { labels: content.diagramLabels })}</div>` : "";
-    const example = !independent && ["seed", "sprout"].includes(scaffold.stage) && !content.hiddenSections.includes("example") ? `<section class="compact-sheet-example"><span>${scaffold.stage === "seed" ? "Model one decision" : "Complete the missing decision"}</span><p>${esc(content.example)}</p></section>` : "";
+    const exampleText = scaffold.stage === "seed" ? content.example : scaffold.stage === "sprout" ? content.partialExample : "";
+    const example = !independent && exampleText && !content.hiddenSections.includes("example") ? `<section class="compact-sheet-example"><span>${scaffold.stage === "seed" ? "Model one decision" : "Complete the missing decision"}</span><p>${esc(exampleText)}</p></section>` : "";
     const oral = !independent && content.oralRehearsal && !content.hiddenSections.includes("oral") ? `<p class="compact-oral"><strong>Say first:</strong> ${esc(content.oralPrompt)}</p>` : "";
     const body = independent
-      ? `<div class="compact-sheet-title"><span class="independence-mark">Support removed</span><h1>${esc(scaffold.title)}</h1><p>${esc(scaffold.objective)}</p></div><section class="compact-independence"><h2>Before you begin</h2><p>${esc(content.independencePrompt)}</p><h2>Afterwards</h2><p>What did you decide for yourself? What evidence shows the learning?</p>${blankLines(state.print.paper === "a5" ? 4 : 3)}</section>`
+      ? `<div class="compact-sheet-title"><span class="independence-mark">Support removed</span><h1>${esc(scaffold.title)}</h1><p>${esc(scaffold.objective)}</p></div><section class="compact-independence"><h2>Your decision</h2><p>${esc(coreTask)}</p><h2>Before you begin</h2><p>${esc(prompts.selfPrompt)}</p><h2>Afterwards</h2><p>What did you decide for yourself? What evidence shows the learning?</p>${blankLines(state.print.paper === "a5" ? 4 : 3)}</section>`
       : `<div class="compact-sheet-title"><span class="eyebrow">${esc(engineById(scaffold.engineId).name)}</span><h1>${esc(scaffold.title)}</h1><p>${esc(scaffold.objective)}</p></div><div class="compact-sheet-instruction"><strong>${esc(content.instruction)}</strong><small>${esc(content.vocabulary.slice(0, 4).join(" · "))}</small></div>${example}${diagram}<div class="compact-prompt-grid">${visiblePrompts.map((prompt, index) => `<section><span>${String(index + 1).padStart(2, "0")}</span><strong>${esc(prompt)}</strong>${blankLines(1)}</section>`).join("")}</div>${oral}<section class="compact-sheet-check"><strong>Independence check</strong><p>${esc(content.checkPrompt || prompts.selfPrompt)}</p></section>`;
     return formatPage(scaffold, format, body, "compact-workpage");
   }
@@ -1681,24 +2062,28 @@
     if (format.id === "workpage") return state.print.paper === "a5" || state.print.orientation === "landscape" ? renderCompactWorkpage(scaffold) : renderResourceDocument(scaffold);
     const prompts = printPromptSet(scaffold);
     const title = `<div class="format-title"><span class="eyebrow">${esc(engineById(scaffold.engineId).name)}</span><h1>${esc(scaffold.title)}</h1><p>${esc(scaffold.objective)}</p></div>`;
-    const cards = prompts.steps.length ? prompts.steps : [prompts.selfPrompt];
+    const independent = scaffold.stage === "independent";
+    const independentItems = [...new Set([prompts.coreTask, prompts.selfPrompt].filter(Boolean))];
+    const supportCards = prompts.steps.filter(item => item !== prompts.coreTask);
+    const cards = independent ? independentItems : supportCards.length ? supportCards : [prompts.selfPrompt];
     if (format.id === "laminated-card") {
-      return formatPage(scaffold, format, `${title}<div class="laminated-grid"><section><span class="card-seed">1 · Enter the thinking</span><h2>${esc(cards[0])}</h2><p>${esc(cards[1] || prompts.selfPrompt)}</p><div class="wipe-space"></div></section><section><span class="card-seed">2 · Check and release</span><h2>${esc(prompts.selfPrompt)}</h2><p><strong>Watch for:</strong> ${esc(prompts.misconception)}</p><div class="vocabulary-line">${prompts.vocabulary.map(word => `<span>${esc(word)}</span>`).join("")}</div></section></div>`);
+      return formatPage(scaffold, format, independent ? `${title}<div class="laminated-grid"><section><span class="card-seed">1 · Your decision</span><h2>${esc(prompts.coreTask)}</h2><div class="wipe-space"></div></section><section><span class="card-seed">2 · Your self-check</span><h2>${esc(prompts.selfPrompt)}</h2><div class="wipe-space"></div></section></div>` : `${title}<div class="laminated-grid"><section><span class="card-seed">1 · Enter the thinking</span><h2>${esc(cards[0])}</h2><p>${esc(cards[1] || prompts.selfPrompt)}</p><div class="wipe-space"></div></section><section><span class="card-seed">2 · Decide and check</span><h2>${esc(prompts.coreTask)}</h2><p>${esc(prompts.selfPrompt)}</p></section></div>`);
     }
     if (format.id === "desk-strip") {
-      const stripPrompts = [...cards, prompts.selfPrompt, "Cover this strip when you can prompt yourself."].slice(0, 4);
-      return formatPage(scaffold, format, `${title}<div class="desk-strips">${stripPrompts.map((item, index) => `<section><span>${index + 1}</span><strong>${esc(item)}</strong><small>${index === stripPrompts.length - 1 ? "My own self-prompt: ____________________" : esc(prompts.vocabulary[index] || scaffold.topic)}</small></section>`).join("")}</div><p class="cut-note">Cut on the dotted lines · place one strip beside the task · remove as soon as it is no longer needed</p>`);
+      const stripPrompts = independent ? independentItems : [...cards.slice(0, 2), prompts.coreTask, prompts.selfPrompt].filter(Boolean);
+      return formatPage(scaffold, format, `${title}<div class="desk-strips cut-guides">${stripPrompts.map((item, index) => `<section><span>${index + 1}</span><strong>${esc(item)}</strong><small>${independent ? index ? "Self-check" : "Pupil decision" : index === stripPrompts.length - 1 ? "My own self-prompt: ____________________" : esc(prompts.vocabulary[index] || scaffold.topic)}</small></section>`).join("")}</div><p class="cut-note">Cut on the dotted lines · place one strip beside the task · remove as soon as it is no longer needed</p>`);
     }
     if (format.id === "table-card") {
-      const tablePrompts = [...cards, ...prompts.questions].slice(0, 4);
+      const tablePrompts = independent ? independentItems : [...cards.slice(0, 2), prompts.coreTask, prompts.selfPrompt].filter(Boolean);
       return formatPage(scaffold, format, `${title}<div class="print-card-grid table-cards">${tablePrompts.map((item, index) => `<section><span class="card-seed">Card ${index + 1}</span><h2>${esc(item)}</h2><p>${index % 2 ? "Ask for evidence, then listen without rescuing." : "Pause. Each person offers one precise idea."}</p><div class="wipe-space small"></div></section>`).join("")}</div>`);
     }
     if (format.id === "mini-card") {
       const count = [4, 6, 8].includes(Number(state.print.arrangement)) ? Number(state.print.arrangement) : 6;
-      const miniPrompts = [...cards, ...prompts.questions, "What can I now do without this card?", ...cards].slice(0, count);
+      const miniPrompts = independent ? independentItems : [...cards.slice(0, Math.max(1, count - 2)), prompts.coreTask, prompts.selfPrompt].filter(Boolean).slice(0, count);
       return formatPage(scaffold, format, `${title}<div class="print-card-grid mini-cards">${miniPrompts.map((item, index) => `<section><span>${String(index + 1).padStart(2, "0")}</span><strong>${esc(item)}</strong><small>${esc(prompts.vocabulary[index % Math.max(prompts.vocabulary.length, 1)] || scaffold.topic)}</small></section>`).join("")}</div>`);
     }
     if (format.id === "vocabulary-card") {
+      if (independent) return formatPage(scaffold, format, `${title}<div class="print-card-grid vocabulary-cards"><section><span class="card-seed">Pupil decision</span><h2>${esc(prompts.coreTask)}</h2><div class="wipe-space small"></div></section><section><span class="card-seed">Self-check</span><h2>${esc(prompts.selfPrompt)}</h2><div class="wipe-space small"></div></section></div>`);
       const vocabulary = prompts.vocabulary.length ? prompts.vocabulary : [scaffold.topic];
       const count = [4, 6, 8].includes(Number(state.print.arrangement)) ? Number(state.print.arrangement) : 6;
       const cardsToPrint = Array.from({ length: Math.min(count, Math.max(vocabulary.length, 1)) }, (_, index) => vocabulary[index % vocabulary.length]);
@@ -1709,48 +2094,49 @@
       return formatPage(scaffold, format, `${title}<div class="print-card-grid teacher-cards">${teacherPrompts.map((item, index) => `<section><span class="card-seed">Teacher move ${index + 1}</span><h2>${esc(item)}</h2><p>${index < 2 ? "Wait after asking. Use the pupil response to decide whether support is needed." : "Return the next subject decision to the pupil."}</p></section>`).join("")}</div>`);
     }
     if (format.id === "discussion-card") {
-      const discussion = [["A · Build", prompts.questions[0]], ["B · Probe", "What evidence or relationship makes that idea work?"], ["A · Refine", prompts.questions[1] || "What would make the explanation more precise?"], ["Together · Conclude", prompts.selfPrompt]];
+      const discussion = independent ? [["Together · Decide", prompts.coreTask], ["Together · Check", prompts.selfPrompt]] : [["A · Build", cards[0]], ["B · Probe", "What evidence or relationship makes that idea work?"], ["A · Refine", cards[1] || prompts.selfPrompt], ["Together · Conclude", prompts.coreTask]];
       return formatPage(scaffold, format, `${title}<div class="print-card-grid discussion-cards">${discussion.map(([role, item]) => `<section><span class="card-seed">${esc(role)}</span><h2>${esc(item)}</h2><p>Listen · paraphrase · add or challenge with a reason.</p></section>`).join("")}</div>`);
     }
     if (format.id === "group-sheet") {
-      return formatPage(scaffold, format, `${title}<div class="group-workspace"><section class="group-roles"><h2>Roles that protect the thinking</h2><div><span>Noticer</span><span>Connector</span><span>Challenger</span><span>Checker</span></div></section><section class="group-focus"><h2>Shared focus</h2><p>${esc(cards[0])}</p><div class="wipe-space"></div></section><section class="group-conclusion"><h2>Our reasoned conclusion</h2><p>${esc(prompts.selfPrompt)}</p>${blankLines(5)}</section></div>`);
+      return formatPage(scaffold, format, independent ? `${title}<div class="group-workspace"><section class="group-focus"><h2>Shared decision</h2><p>${esc(prompts.coreTask)}</p><div class="wipe-space"></div></section><section class="group-conclusion"><h2>Our self-check</h2><p>${esc(prompts.selfPrompt)}</p>${blankLines(5)}</section></div>` : `${title}<div class="group-workspace"><section class="group-roles"><h2>Roles that protect the thinking</h2><div><span>Noticer</span><span>Connector</span><span>Challenger</span><span>Checker</span></div></section><section class="group-focus"><h2>Shared focus</h2><p>${esc(cards[0])}</p><div class="wipe-space"></div></section><section class="group-conclusion"><h2>Our reasoned conclusion</h2><p>${esc(prompts.coreTask)}</p>${blankLines(5)}</section></div>`);
     }
     if (format.id === "display-poster") {
-      const poster = `<div class="poster-layout"><span class="eyebrow">${esc(subjectById(scaffold.subject).name)} thinking</span><h1>${esc(scaffold.title)}</h1><p class="poster-question">${esc(prompts.selfPrompt)}</p><div class="poster-steps">${cards.slice(0, 4).map((item, index) => `<section><span>${index + 1}</span><strong>${esc(item)}</strong></section>`).join("")}</div><div class="poster-release">When you can prompt yourself, let the scaffold go.</div></div>`;
+      const posterCards = independent ? [prompts.selfPrompt] : cards.filter(item => item !== prompts.coreTask).slice(0, 4);
+      const poster = `<div class="poster-layout"><span class="eyebrow">${esc(subjectById(scaffold.subject).name)} thinking</span><h1>${esc(scaffold.title)}</h1><p class="poster-question">${esc(prompts.coreTask)}</p><div class="poster-steps">${posterCards.map((item, index) => `<section><span>${index + 1}</span><strong>${esc(item)}</strong></section>`).join("")}</div>${independent ? "" : '<div class="poster-release">When you can prompt yourself, let the scaffold go.</div>'}</div>`;
       return formatPage(scaffold, format, scaffold.printTile !== undefined ? `<div class="poster-tile-window tile-${scaffold.printTile}"><div class="poster-tile-canvas">${poster}</div></div><p class="tile-note">Tile ${scaffold.printTile + 1} of 4 · trim and align matching edges</p>` : poster);
     }
     if (format.id === "foldable") {
-      const panels = [["Open", cards[0]], ["Connect", cards[1] || prompts.questions[0]], ["Check", prompts.selfPrompt], ["Fold away", "Name the one prompt you will keep in your head."]];
-      return formatPage(scaffold, format, `${title}<div class="foldable-panels">${panels.map(([label, item], index) => `<section><span class="card-seed">${index + 1} · ${esc(label)}</span><h2>${esc(item)}</h2><div class="fold-write"></div></section>`).join("")}</div><p class="cut-note">Cut around the outer edge · fold on the dotted vertical lines</p>`);
+      const panels = independent ? [["Decide", prompts.coreTask], ["Check", prompts.selfPrompt]] : [["Open", cards[0]], ["Connect", cards[1] || prompts.selfPrompt], ["Check", prompts.coreTask], ["Fold away", "Name the one prompt you will keep in your head."]];
+      return formatPage(scaffold, format, `${title}<div class="foldable-panels cut-guides">${panels.map(([label, item], index) => `<section><span class="card-seed">${index + 1} · ${esc(label)}</span><h2>${esc(item)}</h2><div class="fold-write"></div></section>`).join("")}</div><p class="cut-note">Cut around the outer edge · fold on the dotted vertical lines</p>`);
     }
     if (format.id === "a5-sheet") return renderCompactWorkpage(scaffold);
     if (format.id === "cut-cards") {
       const count = [4, 6, 8].includes(Number(state.print.arrangement)) ? Number(state.print.arrangement) : 6;
-      const items = [...cards, ...prompts.questions, prompts.selfPrompt, "What can I now do without this card?"].slice(0, count);
-      return formatPage(scaffold, format, `${title}<div class="cut-card-grid cards-${count}">${items.map((item, index) => `<section><span>${String(index + 1).padStart(2, "0")}</span><strong>${esc(item)}</strong><small>${esc(prompts.vocabulary[index % Math.max(1, prompts.vocabulary.length)] || scaffold.topic)}</small></section>`).join("")}</div><p class="cut-note">Cut on dashed lines · teacher code is discreetly printed in the footer</p>`);
+      const items = independent ? independentItems : [...cards.slice(0, Math.max(1, count - 2)), prompts.coreTask, prompts.selfPrompt].filter(Boolean).slice(0, count);
+      return formatPage(scaffold, format, `${title}<div class="cut-card-grid cut-guides cards-${count}">${items.map((item, index) => `<section><span>${String(index + 1).padStart(2, "0")}</span><strong>${esc(item)}</strong><small>${independent ? index ? "Self-check" : "Pupil decision" : esc(prompts.vocabulary[index % Math.max(1, prompts.vocabulary.length)] || scaffold.topic)}</small></section>`).join("")}</div><p class="cut-note">Cut on dashed lines · teacher code is discreetly printed in the footer</p>`);
     }
     if (format.id === "mini-booklet") {
-      const pages = [["Begin", cards[0]], ["Connect", cards[1] || prompts.questions[0]], ["Check", prompts.selfPrompt], ["Fade", "Name the prompt you can now keep without the booklet."]];
+      const pages = independent ? [["Decide", prompts.coreTask], ["Check", prompts.selfPrompt], ["Decide", prompts.coreTask], ["Check", prompts.selfPrompt]] : [["Begin", cards[0]], ["Connect", cards[1] || prompts.selfPrompt], ["Check", prompts.coreTask], ["Fade", "Name the prompt you can now keep without the booklet."]];
       const side = scaffold.printPart === "booklet-back" ? [pages[1], pages[2]] : [pages[3], pages[0]];
       const numbers = scaffold.printPart === "booklet-back" ? [2, 3] : [4, 1];
-      return formatPage(scaffold, format, `<div class="booklet-side-label">${scaffold.printPart === "booklet-back" ? "Inside · pages 2–3" : "Outside · pages 4–1"}</div><div class="booklet-grid booklet-imposed">${side.map(([label,item], index) => `<section><span>${numbers[index]} · ${esc(label)}</span><h2>${esc(item)}</h2>${blankLines(5)}<small>SS-B${numbers[index]}</small></section>`).join("")}</div><p class="cut-note">Print double-sided · flip on short edge · fold on the centre line</p>`);
+      return formatPage(scaffold, format, `<div class="booklet-side-label">${scaffold.printPart === "booklet-back" ? "Inside · pages 2–3" : "Outside · pages 4–1"}</div><div class="booklet-grid booklet-imposed">${side.map(([label,item], index) => `<section><span>${numbers[index]} · ${esc(label)}</span><h2>${esc(item)}</h2>${blankLines(5)}<small>SS-B${numbers[index]}</small></section>`).join("")}</div><p class="cut-note booklet-note">Print double-sided · flip on short edge · fold on the centre line</p>`);
     }
     if (["modelling-page", "presentation-board"].includes(format.id)) {
-      return formatPage(scaffold, format, `<div class="modelling-layout"><span class="eyebrow">${esc(format.id === "presentation-board" ? "Classroom board" : "Teacher modelling")}</span><h1>${esc(scaffold.title)}</h1><p>${esc(scaffold.objective)}</p><div class="modelling-focus"><strong>${esc(cards[0])}</strong><span>${esc(cards[1] || prompts.questions[0])}</span></div><div class="modelling-reveal"><small>Reveal next</small><strong>${esc(prompts.selfPrompt)}</strong></div></div>`);
+      return formatPage(scaffold, format, `<div class="modelling-layout"><span class="eyebrow">${esc(format.id === "presentation-board" ? "Classroom board" : "Teacher modelling")}</span><h1>${esc(scaffold.title)}</h1><p>${esc(scaffold.objective)}</p><div class="modelling-focus"><strong>${esc(independent ? prompts.selfPrompt : cards[0])}</strong>${independent ? "" : `<span>${esc(cards[1] || prompts.selfPrompt)}</span>`}</div><div class="modelling-reveal"><small>Pupil decision</small><strong>${esc(prompts.coreTask)}</strong></div></div>`);
     }
     if (format.id === "intervention-pack") {
       const part = scaffold.printPart || "intervention-introduce";
       const contentByPart = {
         "intervention-introduce": ["1 · Introduce", "Model one decision aloud", "Name the barrier briefly. Demonstrate how one support is used, but stop before the pupil's protected decision.", cards[0]],
         "intervention-use": ["2 · Use", "Pupil practice", cards[0], cards[1] || prompts.questions[0]],
-        "intervention-check": ["3 · Check", "Inspect independence", prompts.selfPrompt, "Cover one prompt. Record what the pupil can now initiate or check without it."],
+        "intervention-check": ["3 · Check", "Inspect independence", prompts.coreTask, "Cover one prompt. Record what the pupil can now initiate or check without it."],
         "intervention-reduce": ["4 · Reduce", "Plan the next removal", RESOURCE.nextFade(scaffold), "Record the support that disappeared and the evidence that the core learning remained."]
       };
       const [label, heading, first, second] = contentByPart[part] || contentByPart["intervention-introduce"];
       return formatPage(scaffold, format, `${title}<div class="intervention-page"><span class="card-seed">${esc(label)}</span><h2>${esc(heading)}</h2><section><p>${esc(first)}</p>${blankLines(5)}</section><section><p>${esc(second)}</p>${blankLines(5)}</section><aside>One objective · one protected decision · support reduced from observed evidence</aside></div>`, part);
     }
     if (format.id === "home-support") {
-      return formatPage(scaffold, format, `${title}<div class="home-support-grid"><section><h2>For the pupil</h2><p>${esc(cards[0])}</p><p>${esc(prompts.selfPrompt)}</p>${blankLines(4)}</section><section><h2>For an adult helping</h2><p>Ask the prompt, wait, and return the decision to the pupil. Do not supply the answer.</p><p><strong>Useful language:</strong> ${esc(prompts.vocabulary.join(" · "))}</p><p><strong>Stop using this page when:</strong> the pupil can name and use their own next prompt.</p></section></div>`);
+      return formatPage(scaffold, format, `${title}<div class="home-support-grid"><section><h2>For the pupil</h2><p>${esc(prompts.coreTask)}</p>${independent ? `<p>${esc(prompts.selfPrompt)}</p>` : `<p>${esc(cards[0])}</p>`}${blankLines(4)}</section><section><h2>For an adult helping</h2><p>Ask the prompt, wait, and return the decision to the pupil. Do not supply the answer.</p>${independent ? "" : `<p><strong>Useful language:</strong> ${esc(prompts.vocabulary.join(" · "))}</p>`}<p><strong>Stop using this page when:</strong> the pupil can name and use their own next prompt.</p></section></div>`);
     }
     if (format.id === "mixed-pack") return state.print.paper === "a5" || state.print.orientation === "landscape" ? renderCompactWorkpage(scaffold) : renderResourceDocument(scaffold);
     return renderResourceDocument(scaffold);
@@ -1784,10 +2170,16 @@
   function measuredPrintPreflight(root) {
     const findings = [];
     root.querySelectorAll(".paper").forEach((page, index) => {
-      const bottom = page.getBoundingClientRect().bottom;
+      const pageRect = page.getBoundingClientRect();
+      const bottom = pageRect.bottom;
       const footer = page.querySelector(".resource-footer");
       const overflowingChild = [...page.children].find(child => child.getBoundingClientRect().bottom > bottom + 1);
-      if (page.scrollHeight > page.clientHeight + 2 || overflowingChild) findings.push(`Page ${index + 1} needs reflow; content would be clipped.`);
+      const horizontalOverflow = page.scrollWidth > page.clientWidth + 2 || [...page.querySelectorAll("*")].some(child => {
+        const rect = child.getBoundingClientRect();
+        return rect.width > 0 && (rect.left < pageRect.left - 1 || rect.right > pageRect.right + 1);
+      });
+      if (page.scrollHeight > page.clientHeight + 2 || overflowingChild) findings.push(`Page ${index + 1} needs vertical reflow; content would be clipped.`);
+      if (horizontalOverflow) findings.push(`Page ${index + 1} needs horizontal reflow; a long label or element would be clipped.`);
       if (footer && [...page.children].some(child => child !== footer && child.getBoundingClientRect().bottom > footer.getBoundingClientRect().top - 2)) findings.push(`Page ${index + 1} content reaches the footer.`);
     });
     return [...new Set(findings)];
@@ -1804,7 +2196,7 @@
     const engine = engineById(scaffold.engineId);
     if (state.print.paper === "a5" || state.print.orientation === "landscape") {
       return `<article class="paper teacher-page compact-teacher-guide ${paperClasses()}" data-page="teacher"><div class="paper-brand">Scaffold Seeds · Teacher guidance</div><div class="resource-meta"><span>${esc(scaffold.year)}</span><span>${esc(subjectById(scaffold.subject).name)}</span><span>${esc(engine.name)}</span></div><h1>Use, notice, reduce</h1><p class="resource-objective"><strong>${esc(scaffold.title)}</strong> · ${esc(scaffold.objective)}</p><div class="compact-guide-grid">
-        <section><h3>Purpose and barrier</h3><p>${esc(scaffold.situation)}</p><p><strong>Keep with pupils:</strong> ${esc(scaffold.essentialThinking || scaffold.disciplinaryThinking || intelligence.profile.disciplinary)}</p></section>
+        <section><h3>Purpose and barrier</h3><p>${esc(scaffold.situation)}</p><p><strong>Keep with pupils:</strong> ${esc(scaffold.essentialThinking || scaffold.disciplinaryThinking || intelligence.profile.disciplinary)}</p><p class="curriculum-context"><strong>Curriculum context:</strong> ${esc(intelligence.metadata.status)} · ${esc(intelligence.metadata.sourceVersion)}</p></section>
         <section><h3>Introduce briefly</h3><p>Model one decision aloud, then complete only one example together. Do not model the final ${esc(engine.preserves || "decision")} required in the task.</p></section>
         <section><h3>Notice and avoid</h3><p><strong>Listen for:</strong> ${esc(scaffold.misconception || "an insecure underlying connection")}</p><p><strong>Misuse:</strong> ${esc(engine.risk || "too many prompts may supply the next decision")}</p></section>
         <section><h3>Check and fade</h3><p>${esc(assessments[0] || "Cover one prompt and inspect whether the core decision survives.")}</p><p><strong>Next:</strong> ${esc(RESOURCE.nextFade(scaffold))}</p></section>
@@ -1812,7 +2204,7 @@
     }
     return `<article class="paper teacher-page ${paperClasses()}" data-page="teacher"><div class="paper-brand">Scaffold Seeds · Teacher guidance</div><div class="resource-meta"><span>${esc(scaffold.year)}</span><span>${esc(subjectById(scaffold.subject).name)}</span><span>${esc(engineById(scaffold.engineId).name)}</span></div><h1>Using this scaffold well</h1><p class="resource-objective"><strong>${esc(scaffold.title)}</strong> · ${esc(scaffold.objective)}</p><div class="teacher-guide-grid">
       <section class="guide-block"><h3>Observed barrier</h3><p>${esc(scaffold.situation)}</p><ul>${barriers.map(barrier => `<li><strong>${esc(barrier.name)}:</strong> ${esc(barrier.hint)}</li>`).join("")}</ul></section>
-      <section class="guide-block"><h3>Subject thinking to preserve</h3><p>${esc(scaffold.essentialThinking || scaffold.disciplinaryThinking || intelligence.profile.disciplinary)}</p><p><strong>Threshold:</strong> ${esc(scaffold.threshold || intelligence.profile.threshold)}</p></section>
+      <section class="guide-block"><h3>Subject thinking to preserve</h3><p>${esc(scaffold.essentialThinking || scaffold.disciplinaryThinking || intelligence.profile.disciplinary)}</p><p><strong>Threshold:</strong> ${esc(scaffold.threshold || intelligence.profile.threshold)}</p><p class="curriculum-context"><strong>Curriculum context:</strong> ${esc(intelligence.metadata.status)}<br><small>${esc(intelligence.metadata.sourceVersion)}</small></p></section>
       <section class="guide-block"><h3>Introduce it briefly</h3><p>Model one decision aloud. Show how to use the first prompt, then complete only one example together. Do not model the final ${esc(engine.preserves || "decision")} required in the independent task.</p></section>
       <section class="guide-block"><h3>Watch and listen for</h3><p>${esc(scaffold.misconception || "Listen for language or actions that reveal an insecure underlying connection.")}</p><p><strong>Useful language:</strong> ${esc((scaffold.vocabulary || []).join(", "))}</p><p><strong>Representation:</strong> ${esc(scaffold.representation || "Use only if it reveals the intended relationship.")}</p></section>
       <section class="guide-block"><h3>Plan the fade</h3><p><strong>Current:</strong> ${esc(stage.name)} · ${esc(stage.description)}</p><p><strong>Next:</strong> ${esc(RESOURCE.nextFade(scaffold))}</p></section>
@@ -1845,7 +2237,7 @@
     return `<div class="page-heading compact-heading print-heading"><div><span class="eyebrow">${esc(scaffold.year)} · ${esc(subjectById(scaffold.subject).name)}</span><h2>${esc(scaffold.title)}</h2><p>${esc(format.name)} · ${pages.length} page${pages.length === 1 ? "" : "s"}</p></div><button class="text-link" data-action="edit-design">← Back to scaffold</button></div>
       <div class="studio-layout studio-reduced"><aside class="studio-controls">
         <div class="control-group format-control"><h4>Format</h4><button class="format-current" data-action="choose-print-format"><span>${esc(format.group)}</span><strong>${esc(format.name)}</strong><small>${esc(format.note)}</small></button></div>
-        <div class="print-audit ${audit.ready ? "is-ready" : "has-errors"}"><strong>${audit.ready ? "Ready to print" : "Needs attention"}</strong>${audit.errors.map(item => `<p>${esc(item)}</p>`).join("")}${audit.warnings.slice(0, 1).map(item => `<p>${esc(item)}</p>`).join("") || "<p>Page and format are compatible.</p>"}</div>
+        <div class="print-audit ${!audit.ready ? "has-errors" : audit.warnings.length ? "has-warnings" : "is-ready"}"><strong>${!audit.ready ? "Needs attention" : audit.warnings.length ? "Preview recommended" : "Ready for physical preview"}</strong>${audit.errors.map(item => `<p>${esc(item)}</p>`).join("")}${audit.warnings.map(item => `<p>${esc(item)}</p>`).join("") || "<p>Page and format are compatible.</p>"}</div>
         <button class="button button-primary print-primary" data-action="print-now" ${audit.ready ? "" : "disabled"}><span data-icon="print"></span> Print ${pages.length} page${pages.length === 1 ? "" : "s"}</button>
         <details class="print-options"><summary>Print options</summary><div>
           <label>Paper<select data-print-select="paper"><option value="a4" ${state.print.paper === "a4" ? "selected" : ""} ${rule.safePaper && !rule.safePaper.includes("a4") ? "disabled" : ""}>A4</option><option value="a5" ${state.print.paper === "a5" ? "selected" : ""} ${rule.safePaper && !rule.safePaper.includes("a5") ? "disabled" : ""}>A5</option></select></label>
@@ -1872,10 +2264,10 @@
           ${settingSwitch("Reduce motion", "Remove transitions and animated entrances.", "reduceMotion")}
         </div></section>
         <section class="settings-card"><h3>Starting points</h3><div class="settings-list">
-          <div class="settings-row"><span><strong>Typical year group</strong></span><select data-setting-select="typicalYear">${DATA.years.map(year => `<option ${state.settings.typicalYear === year ? "selected" : ""}>${esc(year)}</option>`).join("")}</select></div>
-          <div class="settings-row"><span><strong>Starting support</strong></span><select data-setting-select="defaultStage">${DATA.stages.map(item => `<option value="${item.id}" ${item.id === state.settings.defaultStage ? "selected" : ""}>${esc(item.name)}</option>`).join("")}</select></div>
-          <div class="settings-row"><span><strong>Paper</strong></span><select data-setting-select="defaultPaper"><option value="a4" ${state.settings.defaultPaper === "a4" ? "selected" : ""}>A4</option><option value="a5" ${state.settings.defaultPaper === "a5" ? "selected" : ""}>A5</option></select></div>
-          <div class="settings-row"><span><strong>Print style</strong></span><select data-setting-select="defaultColour">${DATA.build5.printModes.map(mode => `<option value="${mode.id}" ${state.settings.defaultColour === mode.id ? "selected" : ""}>${esc(mode.name)}</option>`).join("")}</select></div>
+          <div class="settings-row"><label for="default-year"><strong>Typical year group</strong></label><select id="default-year" data-setting-select="typicalYear">${DATA.years.map(year => `<option ${state.settings.typicalYear === year ? "selected" : ""}>${esc(year)}</option>`).join("")}</select></div>
+          <div class="settings-row"><label for="default-stage"><strong>Starting support</strong></label><select id="default-stage" data-setting-select="defaultStage">${DATA.stages.map(item => `<option value="${item.id}" ${item.id === state.settings.defaultStage ? "selected" : ""}>${esc(item.name)}</option>`).join("")}</select></div>
+          <div class="settings-row"><label for="default-paper"><strong>Paper</strong></label><select id="default-paper" data-setting-select="defaultPaper"><option value="a4" ${state.settings.defaultPaper === "a4" ? "selected" : ""}>A4</option><option value="a5" ${state.settings.defaultPaper === "a5" ? "selected" : ""}>A5</option></select></div>
+          <div class="settings-row"><label for="default-colour"><strong>Print style</strong></label><select id="default-colour" data-setting-select="defaultColour">${DATA.build5.printModes.map(mode => `<option value="${mode.id}" ${state.settings.defaultColour === mode.id ? "selected" : ""}>${esc(mode.name)}</option>`).join("")}</select></div>
         </div></section>
         <section class="settings-card settings-data"><h3>Backup &amp; recovery</h3><div class="settings-list">
           <div class="settings-row"><span><strong>Export backup</strong><small>Scaffolds, settings and reflections.</small></span><button class="button button-compact" data-action="export-data"><span data-icon="download"></span> Export</button></div>
@@ -1883,7 +2275,7 @@
           <div class="settings-row"><span><strong>Recovery checkpoints</strong></span><button class="button button-compact" data-action="recovery-checkpoints">Review</button></div>
           <div class="settings-row"><span><strong>Recently deleted</strong><small>${state.archives.length} recoverable.</small></span><button class="button button-compact" data-action="recently-deleted">Review</button></div>
         </div></section>
-        <section class="settings-card settings-privacy"><h3>Privacy</h3><p>No login, cloud or direct AI connection. Never place identifiable pupil information in an external prompt.</p><button class="text-link danger-link" data-action="clear-data">Clear all local data</button></section>
+        <section class="settings-card settings-privacy"><h3>Privacy</h3><p>No login, cloud or direct AI connection. Never place identifiable pupil information in an external prompt.</p><button class="text-link danger-link" data-action="clear-data">Clear saved work</button></section>
       </div>`;
   }
   function settingSwitch(title, description, key) {
@@ -1925,7 +2317,7 @@
     openModal({
       title: "Choose a scaffold engine",
       subtitle: `${compatible.length} subject-compatible structures from a ${DATA.engines.length}-engine professional library.`,
-      body: `<div class="engine-recommendations engine-browser">${compatible.map((engine, index) => `<button class="engine-card ${state.draft.engineId === engine.id ? "is-selected" : ""}" data-action="modal-choose-engine" data-id="${engine.id}"><span class="engine-number">${String(index + 1).padStart(2, "0")}</span><span class="family-label">${esc(familyById(engine.family).name)}</span><h4>${esc(engine.name)}</h4><p>${esc(engine.tagline)}</p><small><strong>Preserves:</strong> ${esc(engine.preserves)}</small><small><strong>Watch:</strong> ${esc(engine.risk)}</small></button>`).join("")}</div>`
+      body: `<div class="engine-recommendations engine-browser" role="group" aria-label="Scaffold engine">${compatible.map((engine, index) => `<button class="engine-card ${state.draft.engineId === engine.id ? "is-selected" : ""}" data-action="modal-choose-engine" data-id="${engine.id}" aria-pressed="${state.draft.engineId === engine.id}"><span class="engine-number">${String(index + 1).padStart(2, "0")}</span><span class="family-label">${esc(familyById(engine.family).name)}</span><h4>${esc(engine.name)}</h4><p>${esc(engine.tagline)}</p><small><strong>Preserves:</strong> ${esc(engine.preserves)}</small><small><strong>Watch:</strong> ${esc(engine.risk)}</small></button>`).join("")}</div>`
     });
   }
 
@@ -1933,7 +2325,7 @@
     openModal({
       title: "Choose a classroom format",
       subtitle: "One scaffold can travel into the room in different physical forms.",
-      body: `<div class="format-picker">${DATA.printFormats.map(format => `<button class="format-option ${format.id === state.print.format ? "is-selected" : ""}" data-action="select-print-format" data-id="${format.id}"><span>${esc(format.group)}</span><strong>${esc(format.name)}</strong><p>${esc(format.note)}</p><small>${format.pieces} ${format.pieces === 1 ? "piece" : "pieces"} per pupil page</small></button>`).join("")}</div>`
+      body: `<div class="format-picker" role="group" aria-label="Print format">${DATA.printFormats.map(format => `<button class="format-option ${format.id === state.print.format ? "is-selected" : ""}" data-action="select-print-format" data-id="${format.id}" aria-pressed="${format.id === state.print.format}"><span>${esc(format.group)}</span><strong>${esc(format.name)}</strong><p>${esc(format.note)}</p><small>${format.pieces} ${format.pieces === 1 ? "piece" : "pieces"} per pupil page</small></button>`).join("")}</div>`
     });
   }
 
@@ -2012,6 +2404,7 @@
     const index = state.library.findIndex(item => item.id === scaffold.id);
     if (index >= 0) {
       const previous = state.library[index];
+      if (approvalRelevantHash(previous) !== approvalRelevantHash(scaffold)) invalidateResourceApproval(scaffold);
       const versions = [...(previous.versions || [])];
       if (meaningfulHash(previous) !== meaningfulHash(scaffold)) versions.unshift(versionSnapshot(previous, `Before ${formatDate(scaffold.updatedAt)}`));
       scaffold.versions = versions.slice(0, 16);
@@ -2030,7 +2423,7 @@
   function versionSnapshot(scaffold, name = "Saved checkpoint") {
     const { versions, ...snapshot } = scaffold;
     const compact = JSON.parse(JSON.stringify(snapshot));
-    compact.assets = (compact.assets || []).map(({ dataUrl, analysis, ...metadata }) => ({ ...metadata, assetStoredSeparately: Boolean(dataUrl), analysis }));
+    delete compact.assets;
     if (compact.ai?.lastVerification?.raw) delete compact.ai.lastVerification.raw;
     return { id: uid(), name, savedAt: new Date().toISOString(), snapshot: compact };
   }
@@ -2040,13 +2433,26 @@
     return JSON.stringify(meaningful);
   }
 
+  function approvalRelevantHash(scaffold) {
+    const payload = AI.verificationPayload(scaffold || {}, { sections: [] }, []).resource;
+    return PERSISTENCE?.canonicalChecksumSync ? PERSISTENCE.canonicalChecksumSync(payload) : JSON.stringify(payload);
+  }
+
+  function invalidateResourceApproval(resource) {
+    const ai = resource?.ai;
+    if (!ai || (!ai.lastVerification && !ai.approval && !["teacher-approved", "print-ready"].includes(ai.status))) return resource;
+    resource.ai = { ...ai, status: "review-required", approval: null, lastVerification: null };
+    if (state.aiWorkspace?.resourceId === resource.id) invalidateAIVerification(state.aiWorkspace);
+    return resource;
+  }
+
   function showVersions(id) {
     const scaffold = state.library.find(item => item.id === id);
     if (!scaffold) return;
     const versions = scaffold.versions || [];
     openModal({
       title: "Version history",
-      subtitle: `${scaffold.title} · checkpoints are created only on deliberate saves.`,
+      subtitle: `${scaffold.title} · text and layout checkpoints; current local images are kept separately and do not roll back.`,
       body: versions.length ? `<div class="version-list">${versions.map((version, index) => `<section><div><span class="eyebrow">${relativeDate(version.savedAt)}</span><h3>${esc(version.name)}</h3><p>${esc(version.snapshot.stage ? `${titleCase(version.snapshot.stage)} · ${engineById(version.snapshot.engineId).name}` : "Earlier resource")}</p></div><div><button class="button button-compact" data-action="restore-version" data-parent="${esc(id)}" data-id="${esc(version.id)}">Restore</button><button class="button button-compact" data-action="duplicate-version" data-parent="${esc(id)}" data-id="${esc(version.id)}">Duplicate</button></div></section>`).join("")}</div>` : `<div class="empty-help"><h4>No earlier checkpoints yet</h4><p>Save a meaningful edit or create a named checkpoint from the review screen.</p></div>`
     });
   }
@@ -2057,20 +2463,20 @@
     if (!parent || !version) return;
     const restored = JSON.parse(JSON.stringify(version.snapshot));
     const now = new Date().toISOString();
+    restored.assets = JSON.parse(JSON.stringify(parent.assets || []));
     if (duplicate) {
       restored.id = uid(); restored.title = `${restored.title} · from version`; restored.createdAt = now; restored.updatedAt = now; restored.versions = [];
+      invalidateResourceApproval(restored);
       state.library.unshift(restored);
     } else {
       const currentVersion = versionSnapshot(parent, "Before version restore");
-      const assetData = new Map((parent.assets || []).map(asset => [asset.id, asset.dataUrl]));
-      restored.assets = (restored.assets || []).map(asset => assetData.get(asset.id) ? { ...asset, dataUrl: assetData.get(asset.id) } : asset);
       const replacement = { ...restored, id: parent.id, createdAt: parent.createdAt, updatedAt: now, revision: (parent.revision || 1) + 1, versions: [currentVersion, ...(parent.versions || [])].slice(0, 16) };
       const index = state.library.findIndex(item => item.id === parent.id);
       state.library[index] = replacement;
       if (state.activeScaffold?.id === parent.id) {
         state.activeScaffold = replacement;
         state.draft = normaliseDraft({ ...replacement, editingId: replacement.id });
-        state.aiWorkspace = safeAIWorkspace(replacement, readStore(`${STORAGE.aiWorkspace}.${replacement.id}`, null));
+        state.aiWorkspace = safeAIWorkspace(replacement, durableAIWorkspaces[replacement.id] || readStore(`${STORAGE.aiWorkspace}.${replacement.id}`, null));
         saveDraft();
       }
     }
@@ -2087,6 +2493,7 @@
     if (!name?.trim() || name.trim() === scaffold.title) return;
     scaffold.versions = [versionSnapshot(scaffold, "Before rename"), ...(scaffold.versions || [])].slice(0, 16);
     scaffold.title = name.trim().slice(0, 140);
+    invalidateResourceApproval(scaffold);
     scaffold.updatedAt = new Date().toISOString();
     writeStore(STORAGE.library, state.library);
     toast("Scaffold renamed.");
@@ -2110,6 +2517,7 @@
     const to = state.draft.stage;
     scaffold.fadeHistory = [...(scaffold.fadeHistory || []), { from, to, at: new Date().toISOString() }].slice(-20);
     scaffold.stage = to;
+    invalidateResourceApproval(scaffold);
     scaffold.updatedAt = new Date().toISOString();
     writeStore(STORAGE.library, state.library);
     toast(`Move from ${titleCase(from)} to ${titleCase(to)} recorded.`);
@@ -2133,6 +2541,7 @@
     state.draft.selectedBarriers = [...scaffold.barriers];
     state.draft.engineId = scaffold.engineId;
     state.createStep = 3;
+    state.compareStages = false;
     saveDraft();
     navigate("create");
   }
@@ -2141,34 +2550,40 @@
     const original = state.library.find(item => item.id === id);
     if (!original) return;
     const now = new Date().toISOString();
-    const copy = { ...original, id: uid(), title: `${original.title} · copy`, favourite: false, archived: false, reflection: null, reflections: [], versions: [], createdAt: now, updatedAt: now };
+    const copy = invalidateResourceApproval({ ...original, id: uid(), title: `${original.title} · copy`, favourite: false, archived: false, reflection: null, reflections: [], versions: [], createdAt: now, updatedAt: now });
     state.library.unshift(copy);
     writeStore(STORAGE.library, state.library);
     toast("A fresh copy has been added to your library.");
     render();
   }
 
-  function deleteScaffold(id) {
+  async function deleteScaffold(id) {
     const item = state.library.find(scaffold => scaffold.id === id);
     if (!item?.archived || !window.confirm(`Move “${item.title}” to Recently deleted? You can restore it from Settings.`)) return;
-    const workspace = readStore(`${STORAGE.aiWorkspace}.${id}`, null);
-    const deleted = { id: uid(), resourceId: item.id, deletedAt: new Date().toISOString(), resource: JSON.parse(JSON.stringify(item)), workspace };
-    const nextArchives = [deleted, ...(Array.isArray(state.archives) ? state.archives : [])].slice(0, 50);
-    if (!writeStore(STORAGE.archives, nextArchives)) { toast("The scaffold was not removed because a recovery copy could not be saved."); return; }
-    const previousLibrary = state.library;
-    state.library = state.library.filter(scaffold => scaffold.id !== id);
-    if (!writeStore(STORAGE.library, state.library)) {
-      state.library = previousLibrary;
-      toast("The scaffold was not removed because the library could not be saved.");
+    if (!durableReady || !durablePersistent) {
+      toast("Recently Deleted needs durable browser storage. Keep this resource in the Archive or export a backup.");
       return;
     }
-    state.archives = nextArchives;
-    if (state.activeScaffold?.id === id) state.activeScaffold = state.library[0] || null;
-    toast("Moved to Recently deleted. It can be restored from Settings.");
-    render();
+    try {
+      await flushDurableSnapshot();
+      if (failedStores.has("durable")) throw new Error("durable-save-failed");
+      await PERSISTENCE.softDelete(id, { expectedRevision: item.revision, expectedGeneration: durableGeneration });
+      const snapshot = await PERSISTENCE.getSnapshot();
+      cacheSnapshot(snapshot);
+      durableGeneration = Number(snapshot.metadata?.generation || durableGeneration + 1);
+      state.archives = await PERSISTENCE.listDeleted();
+      toast("Moved to Recently deleted. Its scaffold and AI review workspace can be restored together.");
+      render();
+    } catch (error) {
+      toast("The scaffold was not removed because durable recovery could not be confirmed.");
+    }
   }
 
-  function showRecentlyDeleted() {
+  async function showRecentlyDeleted() {
+    if (durableReady && durablePersistent) {
+      try { state.archives = await PERSISTENCE.listDeleted(); }
+      catch (error) { toast("Recently Deleted could not be opened in this browsing mode."); return; }
+    }
     const deleted = Array.isArray(state.archives) ? state.archives : [];
     openModal({
       title: "Recently deleted",
@@ -2177,30 +2592,30 @@
     });
   }
 
-  function restoreDeleted(id) {
-    const record = state.archives.find(item => item.id === id);
-    if (!record?.resource) return;
-    const restored = migrateLibrary([record.resource])[0];
-    if (!restored) { toast("That recovery copy could not be restored safely."); return; }
-    if (state.library.some(item => item.id === restored.id)) restored.id = uid();
-    restored.archived = true;
-    restored.updatedAt = new Date().toISOString();
-    state.library.unshift(restored);
-    if (!writeStore(STORAGE.library, state.library)) { state.library.shift(); return; }
-    if (record.workspace) writeStore(`${STORAGE.aiWorkspace}.${restored.id}`, { ...record.workspace, resourceId: restored.id });
-    state.archives = state.archives.filter(item => item.id !== id);
-    writeStore(STORAGE.archives, state.archives);
-    closeModal();
-    toast("Resource restored to the Archive.");
-    render();
+  async function restoreDeleted(id) {
+    try {
+      await flushDurableSnapshot();
+      if (failedStores.has("durable")) throw new Error("durable-save-failed");
+      const restored = await PERSISTENCE.restoreDeleted(id);
+      const snapshot = await PERSISTENCE.getSnapshot();
+      durableGeneration = Number(snapshot.metadata?.generation || durableGeneration + 1);
+      cacheSnapshot(snapshot);
+      state.archives = await PERSISTENCE.listDeleted();
+      closeModal();
+      toast(`“${restored.title}” and its review workspace were restored to the Archive.`);
+      render();
+    } catch (error) { toast("That recovery copy could not be restored safely."); }
   }
 
-  function purgeDeleted(id) {
+  async function purgeDeleted(id) {
     const record = state.archives.find(item => item.id === id);
     if (!record || !window.confirm(`Permanently delete “${record.resource?.title || "this resource"}”? This cannot be undone.`)) return;
-    state.archives = state.archives.filter(item => item.id !== id);
-    writeStore(STORAGE.archives, state.archives);
-    showRecentlyDeleted();
+    try {
+      await PERSISTENCE.purgeDeleted(id);
+      try { localStorage.removeItem(`${STORAGE.aiWorkspace}.${id}`); } catch (error) { /* Durable purge already succeeded. */ }
+      state.archives = await PERSISTENCE.listDeleted();
+      showRecentlyDeleted();
+    } catch (error) { toast("Permanent deletion did not complete."); }
   }
 
   function exportData() {
@@ -2247,11 +2662,16 @@
   async function commitImport(mode) {
     const pending = state.pendingImport;
     if (!pending || !["merge", "replace"].includes(mode)) return;
+    if (mode === "replace" && (!durableReady || !durablePersistent)) {
+      toast("Replace needs durable recovery, which is unavailable in this browsing mode. Export the current library first, or use Merge.");
+      return;
+    }
     const buttons = [...modalLayer.querySelectorAll("button")];
     buttons.forEach(button => { button.disabled = true; });
     setSaveStatus("saving");
-    durableCommitInFlight = true;
     try {
+      await flushDurableSnapshot();
+      if (failedStores.has("durable")) throw new Error("durable-save-failed");
       const result = await PERSISTENCE.importBundle(pending.rawText, { mode, conflict: "copy", keepCurrentSettings: mode === "merge", recoveryLabel: `Before importing ${pending.fileName}` });
       durableGeneration = Number(result.snapshot.metadata?.generation || durableGeneration + 1);
       cacheSnapshot(result.snapshot);
@@ -2267,42 +2687,53 @@
       buttons.forEach(button => { button.disabled = false; });
       setSaveStatus("issue");
       toast("Import stopped without changing the current library. Review the file or try again.");
-    } finally { durableCommitInFlight = false; }
+    }
   }
 
   async function clearData() {
-    if (!window.confirm("Clear every saved scaffold, reflection and draft from this browser? A recovery checkpoint will be created first.")) return;
+    if (!durableReady || !durablePersistent) {
+      toast("Clear is unavailable because a durable recovery checkpoint cannot be guaranteed. Export a backup first.");
+      return;
+    }
+    if (!window.confirm("Clear every saved scaffold, reflection and draft from this browser? A durable recovery checkpoint will be created first. Items already in Recently Deleted will remain there.")) return;
     try {
-      if (durableReady) {
-        durableCommitInFlight = false;
-        await commitDurableSnapshot();
-        if (failedStores.has("durable")) throw new Error("durable-save-failed");
-        await PERSISTENCE.createRecoverySnapshot("Before clearing local data");
-        durableCommitInFlight = true;
-        const result = await PERSISTENCE.commitSnapshot({ product: "Scaffold Seeds", schemaVersion: 5, library: [], settings: defaultSettings, reflections: {}, preferences: {}, draft: null, aiWorkspaces: {} }, { expectedGeneration: durableGeneration, createRecovery: false });
-        durableGeneration = Number(result.snapshot.metadata?.generation || durableGeneration + 1);
-      }
+      await flushDurableSnapshot();
+      if (failedStores.has("durable")) throw new Error("durable-save-failed");
+      const result = await PERSISTENCE.commitSnapshot({ product: "Scaffold Seeds", schemaVersion: 5, library: [], settings: defaultSettings, reflections: {}, preferences: {}, draft: null, aiWorkspaces: {} }, { expectedGeneration: durableGeneration, createRecovery: true, recoveryLabel: "Before clearing local data" });
+      durableGeneration = Number(result.snapshot.metadata?.generation || durableGeneration + 1);
+      replaceDurableAIWorkspaces(result.snapshot.aiWorkspaces || {});
     } catch (error) {
-      durableCommitInFlight = false;
       toast("Clear stopped because a recovery checkpoint could not be confirmed.");
       return;
     }
-    durableCommitInFlight = false;
-    Object.values(STORAGE).forEach(key => localStorage.removeItem(key));
-    for (let index = localStorage.length - 1; index >= 0; index -= 1) {
-      const key = localStorage.key(index);
-      if (key?.startsWith(`${STORAGE.aiWorkspace}.`)) localStorage.removeItem(key);
-    }
+    let compatibilityCacheFailed = false;
+    Object.values(STORAGE).filter(key => key !== STORAGE.archives).forEach(key => {
+      try { localStorage.removeItem(key); }
+      catch (error) { compatibilityCacheFailed = true; }
+    });
+    try {
+      for (let index = localStorage.length - 1; index >= 0; index -= 1) {
+        const key = localStorage.key(index);
+        if (key?.startsWith(`${STORAGE.aiWorkspace}.`)) {
+          try { localStorage.removeItem(key); }
+          catch (error) { compatibilityCacheFailed = true; }
+        }
+      }
+    } catch (error) { compatibilityCacheFailed = true; }
     state.library = [];
     state.reflections = {};
-    state.preferences = {};
-    state.archives = [];
+    state.preferences = normalisePreferences({});
+    try { state.archives = await PERSISTENCE.listDeleted(); } catch (error) { state.archives = []; }
     state.draft = normaliseDraft(null);
     state.activeScaffold = null;
     state.settings = { ...defaultSettings };
     state.aiWorkspace = safeAIWorkspace({});
     applySettings();
-    toast("Local data cleared. A recovery checkpoint is available in Settings.");
+    if (compatibilityCacheFailed) {
+      failedStores.add("local-cache");
+      setSaveStatus("issue");
+      toast("Saved work was cleared durably and can be recovered, but the browser compatibility cache could not be refreshed.");
+    } else toast("Saved work cleared. A recovery checkpoint is available; Recently Deleted was retained.");
     render();
   }
 
@@ -2315,7 +2746,8 @@
 
   async function restoreRecoveryCheckpoint(id) {
     try {
-      durableCommitInFlight = true;
+      await flushDurableSnapshot();
+      if (failedStores.has("durable")) throw new Error("durable-save-failed");
       const result = await PERSISTENCE.restoreRecoverySnapshot(id);
       durableGeneration = Number(result.snapshot.metadata?.generation || durableGeneration + 1);
       cacheSnapshot(result.snapshot);
@@ -2323,7 +2755,6 @@
       toast("Recovery checkpoint restored. The replaced state was checkpointed too.");
       render();
     } catch (error) { toast("That recovery checkpoint could not be restored."); }
-    finally { durableCommitInFlight = false; }
   }
 
   async function printNow() {
@@ -2342,12 +2773,6 @@
       document.head.appendChild(style);
     }
     style.textContent = `@media print { @page { size: ${state.print.paper.toUpperCase()} ${state.print.orientation}; margin: 0; } }`;
-    const libraryItem = state.library.find(item => item.id === scaffold.id);
-    if (libraryItem) {
-      libraryItem.lastPrintedAt = new Date().toISOString();
-      if (libraryItem.ai?.status === "teacher-approved") libraryItem.ai.status = "print-ready";
-      writeStore(STORAGE.library, state.library);
-    }
     try { await document.fonts?.ready; } catch (error) { /* Fallback fonts preserve the layout if font loading fails. */ }
     await Promise.all([...printRoot.querySelectorAll("img")].map(image => image.decode?.().catch(() => undefined)));
     await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
@@ -2356,6 +2781,12 @@
       printRoot.innerHTML = "";
       openModal({ title: "Print layout needs reflow", subtitle: "Nothing has been sent to the printer.", body: `<div class="audit-list">${measured.map(item => `<p>${esc(item)}</p>`).join("")}</div><p>Choose a larger paper size, reduce the number of cards, turn off larger pupil text, or split the material into another format.</p>`, footer: '<button class="button" data-action="close-modal">Return to Print Studio</button>' });
       return;
+    }
+    const libraryItem = state.library.find(item => item.id === scaffold.id);
+    if (libraryItem) {
+      libraryItem.lastPrintedAt = new Date().toISOString();
+      if (libraryItem.ai?.status === "teacher-approved") libraryItem.ai.status = "print-ready";
+      writeStore(STORAGE.library, state.library);
     }
     window.print();
   }
@@ -2373,7 +2804,10 @@
     const id = button.dataset.id;
 
     if (action === "new-scaffold") newScaffold();
+    if (action === "resume-draft") resumeDraft();
     if (action === "dismiss-recovery") { state.recoveryNoticeDismissed = true; render(); }
+    if (action === "download-recovery") exportData();
+    if (action === "use-last-saved") useLastSavedAfterRecoveryFailure();
     if (action === "create-back") {
       state.createStep = Math.max(0, state.createStep - 1);
       render();
@@ -2425,28 +2859,24 @@
       } else render();
     }
     if (action === "choose-engine") {
-      state.draft.engineId = id;
-      state.draft.preferredEngine = "";
-      state.draft.familyId = engineById(id).family;
-      state.draft.content = { ...normaliseDraft(null).content };
-      saveDraft();
-      render();
+      if (selectEngine(id)) {
+        saveDraft();
+        render();
+      }
     }
     if (action === "modal-choose-engine") {
-      state.draft.engineId = id;
-      state.draft.preferredEngine = "";
-      state.draft.familyId = engineById(id).family;
-      state.draft.content = { ...normaliseDraft(null).content };
-      saveDraft();
+      const changed = selectEngine(id);
+      if (changed) saveDraft();
       closeModal();
-      render();
+      if (changed) render();
     }
     if (action === "show-all-barriers") showAllBarriers();
     if (action === "show-all-engines") showAllEngines();
     if (action === "choose-stage") {
       state.draft.stage = id;
+      invalidateAIVerification();
       if (state.activeScaffold) {
-        state.activeScaffold = RESOURCE.createStage({ ...state.activeScaffold, content: state.draft.content }, id);
+        state.activeScaffold = invalidateResourceApproval(RESOURCE.createStage({ ...state.activeScaffold, content: state.draft.content }, id));
       }
       saveDraft();
       render();
@@ -2460,7 +2890,9 @@
         toast("Give the resource a clear title first.");
         return;
       }
-      state.activeScaffold = scaffoldFromDraft();
+      const generated = scaffoldFromDraft();
+      const previous = state.library.find(item => item.id === generated.id);
+      state.activeScaffold = previous && approvalRelevantHash(previous) !== approvalRelevantHash(generated) ? invalidateResourceApproval(generated) : generated;
       state.createStep = 3;
       saveDraft();
       render();
@@ -2472,6 +2904,12 @@
     if (action === "show-quality-report") showQualityReport();
     if (action === "open-print") {
       state.activeScaffold = state.activeScaffold || scaffoldFromDraft();
+      if (state.print.resourceId !== state.activeScaffold.id) {
+        state.print.resourceId = state.activeScaffold.id;
+        state.print.paper = state.settings.defaultPaper;
+        state.print.colour = state.settings.defaultColour;
+        state.print.teacherGuidance = state.settings.includeTeacherGuidance;
+      }
       state.print.format = state.activeScaffold.format || state.print.format;
       state.print.stages = [state.activeScaffold.stage || state.settings.defaultStage];
       navigate("print");
@@ -2562,7 +3000,7 @@
       state.aiWorkspace.importRecovery = { rawImport: state.aiWorkspace.rawImport, parsed: state.aiWorkspace.parsed, verification: state.aiWorkspace.verification, rawPreservedAt: state.aiWorkspace.rawPreservedAt, savedAt: new Date().toISOString() };
       state.aiWorkspace.rawImport = "";
       state.aiWorkspace.parsed = null;
-      state.aiWorkspace.verification = null;
+      invalidateAIVerification(state.aiWorkspace);
       state.aiWorkspace.rawPreservedAt = null;
       if (!(state.aiWorkspace.rounds || []).length) updateAIResourceStatus("local-draft");
       saveAIWorkspace();
@@ -2583,14 +3021,14 @@
     if (action === "ai-item-decision") {
       const current = state.aiWorkspace.parsed.sections.flatMap(section => section.items).find(item => item.id === id);
       state.aiWorkspace.parsed = AI.setItemDecision(state.aiWorkspace.parsed, id, button.dataset.status, current?.editedText ?? current?.text);
-      state.aiWorkspace.verification = null;
+      invalidateAIVerification(state.aiWorkspace);
       updateAIResourceStatus("review-required");
       saveAIWorkspace();
       render();
     }
     if (action === "ai-decide-section") {
       state.aiWorkspace.parsed = AI.decideSection(state.aiWorkspace.parsed, id, button.dataset.status);
-      state.aiWorkspace.verification = null;
+      invalidateAIVerification(state.aiWorkspace);
       updateAIResourceStatus("review-required");
       saveAIWorkspace();
       render();
@@ -2598,7 +3036,7 @@
     if (action === "ai-compare-section") { state.aiWorkspace.comparisonSection = id; saveAIWorkspace(); render(); }
     if (action === "ai-trim") {
       state.aiWorkspace.parsed = AI.trimContent(state.aiWorkspace.parsed, id);
-      state.aiWorkspace.verification = null;
+      invalidateAIVerification(state.aiWorkspace);
       saveAIWorkspace();
       toast("Trimming applied visibly; removed content remains recorded.");
       render();
@@ -2637,8 +3075,7 @@
       render();
     }
     if (action === "ai-rerun-verification") {
-      state.aiWorkspace.verification = null;
-      state.aiWorkspace.approvalChecked = false;
+      invalidateAIVerification(state.aiWorkspace);
       runAIVerification();
     }
     if (action === "ai-filter-findings") { state.aiWorkspace.findingFilter = state.aiWorkspace.findingFilter === id ? "" : id; saveAIWorkspace(); render(); }
@@ -2649,11 +3086,13 @@
     }
     if (action === "ai-add-source") {
       state.aiWorkspace.sourceRecords = [...(state.aiWorkspace.sourceRecords || []), AI.makeSourceRecord("", "unverified")];
+      invalidateAIVerification(state.aiWorkspace);
       saveAIWorkspace();
       render();
     }
     if (action === "ai-remove-source") {
       state.aiWorkspace.sourceRecords = (state.aiWorkspace.sourceRecords || []).filter(record => record.id !== id);
+      invalidateAIVerification(state.aiWorkspace);
       saveAIWorkspace();
       render();
     }
@@ -2791,6 +3230,7 @@
       const key = aiOption.dataset.aiOption;
       state.aiWorkspace.options[key] = ["quantity", "maxWords", "modellingLimit"].includes(key) ? Number(aiOption.value) : aiOption.value;
       if (key !== "traceAlgorithm") state.aiWorkspace.prompt = null;
+      if (key !== "traceAlgorithm") invalidateAIVerification(state.aiWorkspace);
       scheduleAIWorkspaceSave();
       return;
     }
@@ -2798,7 +3238,7 @@
     if (aiRaw) {
       state.aiWorkspace.rawImport = aiRaw.value.slice(0, 65000);
       state.aiWorkspace.parsed = null;
-      state.aiWorkspace.verification = null;
+      invalidateAIVerification(state.aiWorkspace);
       scheduleAIWorkspaceSave();
       return;
     }
@@ -2812,7 +3252,7 @@
     if (aiItem) {
       const item = state.aiWorkspace.parsed?.sections.flatMap(section => section.items).find(entry => entry.id === aiItem.dataset.aiItemEdit);
       if (item) { item.editedText = AI.sanitiseRaw(aiItem.value).slice(0, 5000); item.status = "edited"; }
-      state.aiWorkspace.verification = null;
+      invalidateAIVerification(state.aiWorkspace);
       scheduleAIWorkspaceSave();
       return;
     }
@@ -2828,6 +3268,7 @@
     if (aiSourceField && aiSourceField.tagName !== "SELECT") {
       const record = (state.aiWorkspace.sourceRecords || []).find(item => item.id === aiSourceField.dataset.sourceId);
       if (record) record[aiSourceField.dataset.aiSourceField] = aiSourceField.value.slice(0, 800);
+      invalidateAIVerification(state.aiWorkspace);
       scheduleAIWorkspaceSave();
       return;
     }
@@ -2835,9 +3276,10 @@
     if (diagramField) {
       const key = diagramField.dataset.diagramField;
       const value = diagramField.dataset.listMode === "numbers"
-        ? diagramField.value.split(/[,\n]/).map(item => Number(item.trim())).filter(Number.isFinite).slice(0, 24)
-        : ["parts", "numerator", "rows", "columns", "total"].includes(key) && diagramField.value !== "" ? Number(diagramField.value) : diagramField.value;
+        ? diagramField.value.split(/[,\n]/).map(item => item.trim()).filter(Boolean).map(Number).filter(Number.isFinite).slice(0, 24)
+        : ["parts", "numerator", "rows", "columns", "total", "value"].includes(key) && diagramField.value !== "" ? Number(diagramField.value) : diagramField.value;
       state.draft.diagram = { ...(state.draft.diagram || {}), [key]: value };
+      invalidateAIVerification();
       saveDraft();
       const preview = document.getElementById("live-resource-preview");
       if (preview) preview.innerHTML = renderResourceDocument({ ...scaffoldFromDraft(), content: state.draft.content, diagram: { ...state.draft.diagram, type: state.draft.content.diagramType, labels: state.draft.content.diagramLabels } });
@@ -2848,6 +3290,7 @@
       const key = contentField.dataset.contentField;
       const mode = contentField.dataset.listMode;
       state.draft.content[key] = mode === "lines" ? contentField.value.split(/\n+/).map(item => item.trim()).filter(Boolean) : mode === "commas" ? contentField.value.split(/[,\n]/).map(item => item.trim()).filter(Boolean) : contentField.value;
+      invalidateAIVerification();
       if (key === "vocabulary") state.draft.vocabulary = state.draft.content.vocabulary.join(", ");
       setSaveStatus("unsaved");
       saveDraft();
@@ -2867,6 +3310,7 @@
     const field = event.target.closest("[data-draft-field]");
     if (field && field.tagName !== "SELECT") {
       state.draft[field.dataset.draftField] = field.value;
+      invalidateAIVerification();
       saveDraft();
       if (state.createStep === 2) {
         const preview = document.getElementById("live-resource-preview");
@@ -2912,6 +3356,7 @@
       state.aiWorkspace.options[key] = ["quantity", "maxWords", "modellingLimit"].includes(key) ? Number(aiOption.value) : aiOption.value;
       if (key === "depth") state.settings.aiPromptDepth = aiOption.value;
       if (key !== "traceAlgorithm") state.aiWorkspace.prompt = null;
+      if (key !== "traceAlgorithm") invalidateAIVerification(state.aiWorkspace);
       saveAIWorkspace();
       render();
       return;
@@ -2928,7 +3373,7 @@
     const aiSectionMap = event.target.closest("[data-ai-section-map]");
     if (aiSectionMap) {
       state.aiWorkspace.parsed = AI.mapSection(state.aiWorkspace.parsed, Number(aiSectionMap.dataset.index), aiSectionMap.value);
-      state.aiWorkspace.verification = null;
+      invalidateAIVerification(state.aiWorkspace);
       saveAIWorkspace();
       render();
       return;
@@ -2949,6 +3394,7 @@
     if (aiSourceField) {
       const record = (state.aiWorkspace.sourceRecords || []).find(item => item.id === aiSourceField.dataset.sourceId);
       if (record) record[aiSourceField.dataset.aiSourceField] = aiSourceField.value.slice(0, 800);
+      invalidateAIVerification(state.aiWorkspace);
       saveAIWorkspace();
       return;
     }
@@ -2965,7 +3411,10 @@
         image.onload = () => {
           targetWorkspace.image = normaliseLocalImage({ id: uid(), name: file.name.slice(0, 120), type: file.type, bytes: file.size, dataUrl: reader.result, width: image.naturalWidth, height: image.naturalHeight, rotation: 0, fit: "contain", caption: "", alt: "", greyscale: false, storedLocally: true, analysis: analyseLocalImage(image) });
           if (state.aiWorkspace === targetWorkspace) saveAIWorkspace();
-          else if (targetResourceId) writeStore(`${STORAGE.aiWorkspace}.${targetResourceId}`, targetWorkspace);
+          else if (targetResourceId) {
+            rememberDurableAIWorkspace(targetWorkspace);
+            writeStore(`${STORAGE.aiWorkspace}.${targetResourceId}`, targetWorkspace);
+          }
           toast(file.size > 850000 ? "Image loaded locally. Its size may limit how many versions the browser can store." : "Image loaded locally. Add a caption and alt text before use.");
           if (state.aiWorkspace === targetWorkspace) render();
         };
@@ -2982,6 +3431,7 @@
       const mode = contentField.dataset.listMode;
       state.draft.content[key] = mode === "commas" ? contentField.value.split(/[,\n]/).map(item => item.trim()).filter(Boolean) : contentField.value;
       if (key === "diagramType") state.draft.diagram.type = contentField.value;
+      invalidateAIVerification();
       saveDraft();
       render();
       return;
@@ -2989,6 +3439,7 @@
     const contentToggle = event.target.closest("[data-content-toggle]");
     if (contentToggle) {
       state.draft.content[contentToggle.dataset.contentToggle] = contentToggle.checked;
+      invalidateAIVerification();
       saveDraft();
       render();
       return;
@@ -2998,6 +3449,7 @@
       const id = sectionToggle.dataset.hiddenSection;
       const hidden = state.draft.content.hiddenSections || [];
       state.draft.content.hiddenSections = sectionToggle.checked ? hidden.filter(item => item !== id) : [...new Set([...hidden, id])];
+      invalidateAIVerification();
       saveDraft();
       render();
       return;
@@ -3014,6 +3466,7 @@
     if (field) {
       const key = field.dataset.draftField;
       state.draft[key] = field.value;
+      invalidateAIVerification();
       if (key === "year" || key === "subject") {
         const entry = curriculumEntries()[0];
         state.draft.topic = entry?.title || "";
@@ -3092,16 +3545,27 @@
         else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
       }
     }
+    if (event.key === "Tab" && modalLayer.hidden && sidebar.classList.contains("is-open") && window.matchMedia("(max-width: 820px)").matches) {
+      const focusable = [...sidebar.querySelectorAll('button:not([disabled]), [href], summary, [tabindex]:not([tabindex="-1"])'), menuButton].filter(item => !item.hidden && item.getClientRects().length);
+      if (focusable.length) {
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+        else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+      }
+    }
     if (event.key === "Escape") {
       if (!modalLayer.hidden) closeModal();
       else closeSidebar();
     }
   });
   window.addEventListener("pagehide", () => { if (state.aiWorkspace) saveAIWorkspace(); saveDraft(); });
+  window.addEventListener("resize", syncSidebarAccessibility);
   window.addEventListener("afterprint", () => { const root = document.getElementById("print-root"); if (root) root.innerHTML = ""; });
   document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") { if (state.aiWorkspace) saveAIWorkspace(); saveDraft(); } });
 
   applySettings();
+  syncSidebarAccessibility();
   hydrateIcons(document);
   render();
   initialisePersistence();

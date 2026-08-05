@@ -2,7 +2,7 @@
 
 Scaffold Seeds is a local-first scaffold designer for primary teachers in England. It begins with one question: **Where are pupils getting stuck?** It helps a teacher identify the barrier, preserve the curriculum thinking, choose the smallest useful support and plan how that support will disappear.
 
-This repository contains the Build 6 reduced release candidate. It preserves the Build 5 Gold Master engines, curriculum, verification, persistence and print systems while removing interface competition and repeated decisions.
+This repository contains the Build 7 release candidate. It preserves Build 6's reduced interface while recertifying the product's curriculum routing, scaffold fading, diagram truthfulness, AI approval boundary, durable persistence and print composition.
 
 ## Release identity
 
@@ -10,7 +10,7 @@ This repository contains the Build 6 reduced release candidate. It preserves the
 - two permanent destinations: Home and Library; curriculum reference and preferences remain occasional utilities
 - Print and AI appear only in the context of a completed scaffold rather than as competing starting points
 - 78 local scaffold engines across 13 subject areas, EYFS to Year 6
-- explicit curriculum-profile and year-progression routing, with honest England, locally determined RE and September 2026 RSHE/EYFS context labels
+- explicit curriculum-profile and year-progression routing, with honest England, locally determined RE, and labels that distinguish current RSHE/EYFS guidance from the revisions effective 1 September 2026
 - a protected `coreTask` that remains visible while examples, vocabulary, prompts and adult cues reduce across Seed, Sprout, Growth and Independent
 - evidence-based quality judgements that distinguish local checks from teacher review instead of claiming guaranteed effectiveness
 - value-aware local diagrams, with schematic warnings whenever a relationship cannot be validated from supplied values
@@ -48,7 +48,7 @@ External AI remains optional, provider-neutral and outside the application. Scaf
 - full, selected and single-resource envelopes all pass through one validator and can round-trip
 - import preview with Merge or Replace; replace is committed only after full validation and an automatic recovery checkpoint
 - malformed records are quarantined individually instead of hiding the rest of a library
-- recoverable deletion, exact version replacement and compact version snapshots that do not duplicate image data
+- recoverable deletion, exact text/layout version replacement and compact checkpoints that preserve current local images without pretending to version image bytes
 - debounced library search and a 60-resource render window for large libraries
 - installable static PWA shell and same-origin offline cache; no network dependency after the application shell is cached
 
@@ -94,9 +94,12 @@ node tests/build5-release.test.js
 node tests/build5-static.test.js
 node tests/build5-simulation.test.js
 node tests/build6-reduction.test.js
+node tests/curriculum-data-correctness.test.js
+node tests/build7-reliability.test.js
+node tests/build7-certification.test.js
 ```
 
-The combined automated suite covers 106,444 assertions. Its core combinatorial gate generates 41,496 subject × year × engine × stage × format cases; the release simulation adds the complete 1,064-case print-rule matrix and a 5,000-resource library load. Build 6 adds explicit reduction gates for permanent navigation, the four-decision workflow, progressive disclosure and removal of superseded screens. See `tests/BUILD6_REDUCTION_PROTOCOL.md` for the reduction record and `tests/BUILD5_RELEASE_PROTOCOL.md` for the accessibility, iPad Safari and physical print sign-off that cannot be established by a static test runtime.
+The combined automated suite covers 110,173 assertions. Its core combinatorial gate generates 41,496 subject × year × engine × stage × format cases; the release simulation adds the complete 1,064-case print-rule matrix and a 5,000-resource library load. Build 6 protects the reduced navigation and four-decision workflow. Build 7 adds exact-year curriculum probes, persistence-race simulations and adversarial certification of pupil/teacher separation, fading, diagrams, AI verification and print overflow. The 5,000-resource gate certifies correctness and capacity, not physical-browser interaction latency: full-snapshot commits measured roughly 0.8–1.2 seconds in the Node memory adapter and remain an explicit Safari performance sign-off condition. See `tests/BUILD7_RELEASE_CERTIFICATION.md` for the certification record and the physical Safari, iPad, VoiceOver and printer promotion gates that cannot be established by a static test runtime.
 
 ## Privacy
 

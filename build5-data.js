@@ -252,9 +252,13 @@
     ],
     science: [
       { title: "Seasonal change", years: ["Year 1"], objectives: ["Observe changes across the four seasons", "Observe and describe weather associated with the seasons and how day length varies"], vocabulary: ["season", "weather", "daylight", "observe", "pattern"], misconceptions: ["Seasons are caused by the Earth moving nearer to the Sun", "Every day in one season has the same weather"], barriers: ["attention", "vocabulary", "reasoning"], profileId: "observation" },
-      { title: "Living things and habitats", years: ["Year 2", "Year 4", "Year 5", "Year 6"], objectives: ["Explore and compare living, dead and never-alive things and habitats", "Use classification keys and recognise environmental change", "Describe life cycles and classify living things using observable characteristics"], vocabulary: ["habitat", "organism", "classification", "life cycle", "environment"], misconceptions: ["Anything that moves is alive", "Classification groups are chosen only by appearance"], barriers: ["knowledge", "conceptual", "organisation"], profileId: "observation" },
+      { title: "Living things and habitats", years: ["Year 2"], objectives: ["Explore and compare the differences between things that are living, dead and have never been alive", "Identify that most living things live in habitats to which they are suited", "Describe how animals obtain food from plants and other animals using a simple food chain"], vocabulary: ["living", "dead", "habitat", "microhabitat", "food chain"], misconceptions: ["Anything that moves is alive", "A habitat is only the place where an animal sleeps"], barriers: ["knowledge", "conceptual", "organisation"], profileId: "observation" },
+      { title: "Living things and habitats", years: ["Year 4"], objectives: ["Recognise that living things can be grouped in a variety of ways", "Explore and use classification keys to group, identify and name living things", "Recognise that environments can change and that this can pose dangers to living things"], vocabulary: ["classification", "classification key", "characteristic", "environment", "organism"], misconceptions: ["There is only one correct way to group living things", "Classification groups are chosen only by appearance"], barriers: ["knowledge", "conceptual", "organisation"], profileId: "observation" },
+      { title: "Living things and habitats", years: ["Year 5"], objectives: ["Describe the differences in the life cycles of a mammal, an amphibian, an insect and a bird", "Describe the life process of reproduction in some plants and animals"], vocabulary: ["life cycle", "reproduction", "metamorphosis", "mammal", "amphibian"], misconceptions: ["Every animal has the same life-cycle stages", "All plants reproduce using seeds"], barriers: ["knowledge", "conceptual", "organisation"], profileId: "observation" },
+      { title: "Living things and habitats", years: ["Year 6"], objectives: ["Describe how living things are classified into broad groups according to common observable characteristics", "Give reasons for classifying plants and animals based on specific characteristics"], vocabulary: ["classification", "vertebrate", "invertebrate", "micro-organism", "characteristic"], misconceptions: ["Micro-organisms are all harmful", "Classification is based on one visible feature"], barriers: ["knowledge", "conceptual", "organisation"], profileId: "observation" },
       { title: "Rocks and soils", years: ["Year 3"], objectives: ["Compare and group rocks by appearance and simple physical properties", "Describe simply how fossils are formed", "Recognise that soils are made from rocks and organic matter"], vocabulary: ["rock", "mineral", "fossil", "permeable", "soil"], misconceptions: ["All rocks are equally hard", "Fossils are bones placed inside rocks"], barriers: ["knowledge", "vocabulary", "conceptual"], profileId: "explanation" },
-      { title: "Electricity", years: ["Year 4", "Year 6"], objectives: ["Construct and diagnose simple series circuits", "Use recognised symbols and explain how component changes affect circuit function"], vocabulary: ["circuit", "component", "cell", "current", "conductor"], misconceptions: ["Current is used up by each component", "A battery sends current from only one terminal"], barriers: ["conceptual", "representation", "reasoning"], profileId: "explanation" },
+      { title: "Electricity", years: ["Year 4"], objectives: ["Identify common appliances that run on electricity", "Construct a simple series electrical circuit and identify its basic components", "Recognise whether a lamp will light in a simple series circuit and recognise that a switch opens and closes a circuit", "Recognise common conductors and insulators"], vocabulary: ["circuit", "component", "cell", "switch", "conductor"], misconceptions: ["A battery sends electricity from only one terminal", "Any gap in a circuit can be bridged by any material"], barriers: ["conceptual", "representation", "reasoning"], profileId: "explanation" },
+      { title: "Electricity", years: ["Year 6"], objectives: ["Associate the brightness of a lamp or volume of a buzzer with the number and voltage of cells used in a circuit", "Compare and give reasons for variations in how components function", "Use recognised symbols when representing a simple circuit in a diagram"], vocabulary: ["voltage", "cell", "component", "circuit symbol", "current"], misconceptions: ["Current is used up by each component", "Adding cells always improves every circuit"], barriers: ["conceptual", "representation", "reasoning"], profileId: "explanation" },
       { title: "Earth and space", years: ["Year 5"], objectives: ["Describe the movement of the Earth and other planets relative to the Sun", "Use the Earth's rotation to explain day and night"], vocabulary: ["orbit", "rotation", "axis", "planet", "solar system"], misconceptions: ["The Sun travels around the Earth each day", "The Moon produces its own light"], barriers: ["conceptual", "representation", "vocabulary"], profileId: "explanation" },
       { title: "Evolution and inheritance", years: ["Year 6"], objectives: ["Recognise that living things have changed over time and fossils provide information about earlier life", "Recognise that offspring vary and that adaptation may lead to evolution"], vocabulary: ["inheritance", "variation", "adaptation", "evolution", "fossil"], misconceptions: ["Individual organisms choose adaptations they need", "Evolution always means becoming stronger or better"], barriers: ["conceptual", "chronology", "explanation"], profileId: "explanation" }
     ],
@@ -276,37 +280,187 @@
     });
   });
 
-  const profileRoutes = {
-    english: [["phonics|grapheme|word reading|decod|spell", "spelling"], ["fluency", "fluency"], ["handwrit", "handwriting"], ["vocab|word meaning", "vocabulary"], ["grammar|punctuat|sentence", "grammar"], ["edit|revise", "editing"], ["oracy|speak|listen|discussion", "oracy"], ["compos|write|author|text type", "composition"], ["read|compreh|infer|poetry|text", "reading"]],
-    mathematics: [["fraction|decimal|percent", "fractions"], ["multipli|division|ratio|proportion", "multiplicative"], ["addition|subtract", "additive"], ["geometry|shape|position|measure|statistic|graph|data", "geometry"], ["number|place value|algebra|sequence", "number"]],
-    science: [["enquir|variable|fair test|investigat|working scientifically", "enquiry"], ["observ|classif|season|living|animal|plant|habitat", "observation"], ["explain|force|electric|earth|space|rock|material|light|sound|evolution", "explanation"]],
-    history: [["chronolog|timeline|sequence|period", "chronology"], ["cause|consequence|signific|change|continuity", "causation"], ["source|evidence|interpret|civilisation|society", "evidence"]],
-    geography: [["map|grid|direction|locat", "maps"], ["fieldwork|observe|survey", "fieldwork"], ["process|weather|climate|river|water|physical|human", "process"], ["place|region|country|settlement|compare", "place"]],
-    computing: [["debug|error|test", "debugging"], ["data|information|database", "data"], ["network|system|hardware|internet", "systems"], ["algorithm|program|sequence|code", "algorithms"]],
-    art: [["look|artist|observe|evaluate", "looking"], ["make|material|draw|paint|sculpt|create", "making"]],
-    "design-technology": [["user|purpose|design|criteria", "design"], ["make|test|improve|food|mechanism|structure", "making"]],
-    music: [["perform|listen|sing|pulse|rhythm", "perform"], ["compos|improv|create|refine", "compose"]],
-    "physical-education": [["game|tactic|team|space", "tactics"], ["move|dance|gym|swim|perform", "movement"]],
-    languages: [[".", "language"]],
-    "religious-education": [[".", "worldviews"]],
-    pshe: [[".", "relationships"]]
+  const profileByTitle = {
+    english: {
+      "communication and language": "oracy",
+      "reading comprehension": "reading",
+      "reading fluency": "fluency",
+      "spelling and morphology": "spelling",
+      "grammar and punctuation": "grammar",
+      "handwriting and transcription": "handwriting",
+      "vocabulary and oracy": "vocabulary",
+      "sentence construction": "grammar",
+      composition: "composition",
+      "editing and revision": "editing"
+    },
+    mathematics: {
+      "number foundations": "number",
+      "place value": "number",
+      "addition and subtraction": "additive",
+      "multiplication and division": "multiplicative",
+      fractions: "fractions",
+      "fractions, decimals and percentages": "fractions",
+      "geometry and measure": "geometry",
+      statistics: "geometry",
+      "ratio and proportion": "multiplicative",
+      algebra: "number"
+    },
+    science: {
+      "understanding the world": "observation",
+      plants: "observation",
+      "animals including humans": "observation",
+      "everyday materials": "observation",
+      "uses of everyday materials": "explanation",
+      "states of matter": "explanation",
+      "properties and changes of materials": "explanation",
+      "forces and magnets": "explanation",
+      forces: "explanation",
+      light: "explanation",
+      sound: "explanation",
+      "working scientifically": "enquiry",
+      "seasonal change": "observation",
+      "living things and habitats": "observation",
+      "rocks and soils": "explanation",
+      electricity: "explanation",
+      "earth and space": "explanation",
+      "evolution and inheritance": "explanation"
+    },
+    history: {
+      "past and present": "chronology",
+      "changes within living memory": "chronology",
+      "ancient britain": "chronology",
+      "britain after rome": "causation",
+      "historical enquiry": "evidence"
+    },
+    geography: {
+      "people, culture and communities": "place",
+      "locational knowledge": "maps",
+      "place knowledge": "place",
+      "human and physical geography": "process",
+      "geographical skills and fieldwork": "fieldwork"
+    },
+    computing: {
+      "computational thinking": "algorithms",
+      programming: "algorithms",
+      "information technology": "data",
+      "computer systems and networks": "systems"
+    },
+    art: {
+      "drawing and observation": "looking",
+      "colour, paint and surface": "making",
+      "sculpture, textiles and materials": "making",
+      "artists and creative connections": "looking"
+    },
+    "design-technology": {
+      "user, purpose and design criteria": "design",
+      "structures and mechanisms": "making",
+      "materials and manufacture": "making",
+      "test, evaluate and improve": "making"
+    },
+    music: {
+      "pulse, rhythm and metre": "perform",
+      "pitch, melody and notation": "perform",
+      "listening and appraisal": "perform",
+      "composition and performance": "compose"
+    },
+    "physical-education": {
+      "fundamental movement and skill": "movement",
+      "games and tactical decision-making": "tactics",
+      "dance and gymnastics": "movement",
+      "health, fitness and safe participation": "movement"
+    },
+    languages: {
+      "sounds and spelling": "language",
+      "vocabulary and retrieval": "language",
+      "sentence building and grammar": "language",
+      "interaction and culture": "language"
+    },
+    "religious-education": {
+      "belief, practice and identity": "worldviews",
+      "texts, artefacts and interpretation": "worldviews",
+      "questions, reasons and lived experience": "worldviews"
+    },
+    pshe: {
+      "relationships and communication": "relationships",
+      "health, emotions and strategies": "relationships",
+      "online safety and decisions": "relationships",
+      "goals and transition": "relationships"
+    }
   };
 
-  function explicitProfileId(subjectId, entry) {
+  const defaultProfileBySubject = {
+    english: "reading", mathematics: "number", science: "explanation", history: "evidence", geography: "place",
+    computing: "algorithms", art: "looking", "design-technology": "design", music: "perform",
+    "physical-education": "movement", languages: "language", "religious-education": "worldviews", pshe: "relationships"
+  };
+
+  const titleKey = title => String(title || "").trim().toLowerCase().replace(/[–—]/g, "-").replace(/\s+/g, " ");
+
+  function resolveProfile(subjectId, entry) {
     const valid = new Set((DATA.subjectBrains?.[subjectId]?.profiles || []).map(profile => profile.id));
-    if (valid.has(entry.profileId)) return entry.profileId;
-    const text = `${entry.title || ""} ${(entry.objectives || []).join(" ")}`.toLowerCase();
-    const routed = (profileRoutes[subjectId] || []).find(([pattern]) => new RegExp(pattern, "i").test(text))?.[1];
-    return valid.has(routed) ? routed : [...valid][0] || "";
+    if (valid.has(entry.profileId)) return { id: entry.profileId, route: "declared", reviewRequired: false };
+    const mapped = profileByTitle[subjectId]?.[titleKey(entry.title)];
+    if (valid.has(mapped)) return { id: mapped, route: "bundled-title", reviewRequired: false };
+    const fallback = valid.has(defaultProfileBySubject[subjectId]) ? defaultProfileBySubject[subjectId] : [...valid][0] || "";
+    return { id: fallback, route: "fallback-review", reviewRequired: true };
+  }
+
+  const KEY_STAGE_2_YEARS = new Set(["Year 3", "Year 4", "Year 5", "Year 6"]);
+  const CORE_YEAR_SUBJECTS = new Set(["english", "mathematics", "science"]);
+
+  function sourceVersionFor(subjectId, year) {
+    if (subjectId === "languages" && !KEY_STAGE_2_YEARS.has(year)) return "School curriculum · locally selected language enrichment";
+    if (subjectId === "religious-education") return "Locally applicable agreed or trust RE syllabus";
+    if (subjectId === "pshe" && year === "EYFS") return "EYFS statutory framework · personal, social and emotional development";
+    if (subjectId === "pshe") return "Current RSHE guidance to 31 August 2026 · revised guidance from 1 September 2026";
+    if (year === "EYFS") return "Current EYFS framework to 31 August 2026 · revised framework from 1 September 2026";
+    return "National curriculum in England · primary";
+  }
+
+  function curriculumStatusFor(subjectId, year) {
+    if (subjectId === "languages" && !KEY_STAGE_2_YEARS.has(year)) return "school enrichment · locally sequenced";
+    if (subjectId === "religious-education") return "locally determined statutory provision";
+    if (subjectId === "pshe" && year === "EYFS") return "early-years statutory framework context";
+    if (subjectId === "pshe") return "statutory guidance · school-sequenced progression";
+    if (year === "EYFS") return "early-years statutory framework context";
+    if (CORE_YEAR_SUBJECTS.has(subjectId)) return "national curriculum · selected year or phase context";
+    return `national curriculum · ${["Year 1", "Year 2"].includes(year) ? "key stage 1" : "key stage 2"} content with local sequencing`;
+  }
+
+  function developmentalFocusFor(subjectId, year) {
+    const release = subjectReleaseProfiles[subjectId];
+    return release ? `${release.bandFocus[BAND_FOR_YEAR[year]]}. ${DEVELOPMENTAL_MOVE[year]}` : "";
   }
 
   DATA.subjects.forEach(subject => {
-    subject.entries = (subject.entries || []).map(entry => ({
-      ...entry,
-      profileId: explicitProfileId(subject.id, entry),
-      sourceVersion: entry.years?.includes("EYFS") ? "EYFS framework · transition to September 2026 version" : subject.id === "pshe" ? "Relationships and Health Education guidance · September 2026" : subject.id === "religious-education" ? "Locally applicable agreed or trust syllabus" : "National curriculum in England · primary",
-      statusByYear: Object.fromEntries((entry.years || []).map(year => [year, subject.id === "languages" && !["Year 3", "Year 4", "Year 5", "Year 6"].includes(year) ? "school enrichment" : subject.id === "religious-education" ? "locally determined statutory provision" : year === "EYFS" ? "early-years framework" : "national or statutory curriculum context"]))
-    }));
+    subject.entries = (subject.entries || []).map(entry => {
+      const profile = resolveProfile(subject.id, entry);
+      const years = Array.isArray(entry.years) ? entry.years : [];
+      const sourceVersionByYear = Object.fromEntries(years.map(year => [year, sourceVersionFor(subject.id, year)]));
+      const statusByYear = Object.fromEntries(years.map(year => [year, curriculumStatusFor(subject.id, year)]));
+      const curriculumByYear = Object.fromEntries(years.map(year => [year, {
+        status: statusByYear[year],
+        sourceVersion: sourceVersionByYear[year],
+        developmentalFocus: developmentalFocusFor(subject.id, year),
+        profileId: profile.id,
+        profileReviewRequired: profile.reviewRequired,
+        objectives: [...(entry.objectives || [])]
+      }]));
+      const objectiveYears = subject.id === "science"
+        ? Object.fromEntries((entry.objectives || []).map(objective => [objective, [...years]]))
+        : entry.objectiveYears;
+      return {
+        ...entry,
+        profileId: profile.id,
+        profileRouting: profile.route,
+        profileReviewRequired: profile.reviewRequired,
+        ...(objectiveYears ? { objectiveYears } : {}),
+        sourceVersionByYear,
+        sourceVersion: [...new Set(Object.values(sourceVersionByYear))].join(" / "),
+        statusByYear,
+        curriculumByYear
+      };
+    });
   });
 
   DATA.subjects.forEach(subject => {
@@ -314,9 +468,45 @@
     if (!release) return;
     subject.release = {
       ...release,
-      yearFocus: Object.fromEntries(YEARS.map(year => [year, `${release.bandFocus[BAND_FOR_YEAR[year]]}. ${DEVELOPMENTAL_MOVE[year]}`]))
+      yearFocus: Object.fromEntries(YEARS.map(year => [year, `${release.bandFocus[BAND_FOR_YEAR[year]]}. ${DEVELOPMENTAL_MOVE[year]}`])),
+      statusByYear: Object.fromEntries(YEARS.map(year => [year, curriculumStatusFor(subject.id, year)])),
+      sourceVersionByYear: Object.fromEntries(YEARS.map(year => [year, sourceVersionFor(subject.id, year)]))
     };
   });
+
+  DATA.curriculumMetadataFor = (subjectId, entryOrTitle, year) => {
+    const subject = DATA.subjects.find(item => item.id === subjectId);
+    const entry = entryOrTitle && typeof entryOrTitle === "object"
+      ? entryOrTitle
+      : subject?.entries?.find(item => item.title === entryOrTitle && (item.years || []).includes(year));
+    const selected = entry?.curriculumByYear?.[year];
+    if (!subject || !entry || !selected) {
+      return {
+        mapped: false,
+        subjectId,
+        year,
+        title: typeof entryOrTitle === "string" ? entryOrTitle : entry?.title || "",
+        status: "not mapped for the selected year",
+        sourceVersion: sourceVersionFor(subjectId, year),
+        developmentalFocus: developmentalFocusFor(subjectId, year),
+        objectives: []
+      };
+    }
+    const objectives = (entry.objectives || []).filter(objective => !entry.objectiveYears || entry.objectiveYears[objective]?.includes(year));
+    return {
+      mapped: true,
+      subjectId,
+      year,
+      title: entry.title,
+      status: selected.status,
+      sourceVersion: selected.sourceVersion,
+      developmentalFocus: selected.developmentalFocus,
+      profileId: entry.profileId,
+      profileRouting: entry.profileRouting,
+      profileReviewRequired: entry.profileReviewRequired,
+      objectives
+    };
+  };
 
   DATA.engines.forEach(engine => {
     engine.subjects = [...new Set((engine.subjects || []).filter(id => id !== "eyfs"))];

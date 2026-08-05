@@ -554,6 +554,93 @@
     return output;
   }
 
+  function verificationPayload(scaffold, parsed, sourceRecords = [], verificationOptions = {}) {
+    const resource = RESOURCE.normalise(scaffold || {});
+    return {
+      resource: {
+        id: resource.id || "",
+        year: resource.year || "",
+        subject: resource.subject || "",
+        topic: resource.topic || "",
+        objective: resource.objective || "",
+        phase: resource.phase || "",
+        situation: resource.situation || "",
+        expectedOutcome: resource.expectedOutcome || "",
+        barriers: Array.isArray(resource.barriers) ? resource.barriers : [],
+        customBarrier: resource.customBarrier || "",
+        engineId: resource.engineId || "",
+        familyId: resource.familyId || "",
+        profileId: resource.profileId || "",
+        stage: resource.stage || "",
+        title: resource.title || "",
+        vocabulary: Array.isArray(resource.vocabulary) ? resource.vocabulary : [],
+        misconception: resource.misconception || "",
+        intention: resource.intention || "",
+        essentialThinking: resource.essentialThinking || "",
+        disciplinaryThinking: resource.disciplinaryThinking || "",
+        pupilAction: resource.pupilAction || "",
+        removalPathway: resource.removalPathway || "",
+        representation: resource.representation || "",
+        prerequisites: Array.isArray(resource.prerequisites) ? resource.prerequisites : [],
+        smallSteps: Array.isArray(resource.smallSteps) ? resource.smallSteps : [],
+        teacherQuestions: Array.isArray(resource.teacherQuestions) ? resource.teacherQuestions : [],
+        assessmentOpportunities: Array.isArray(resource.assessmentOpportunities) ? resource.assessmentOpportunities : [],
+        format: resource.format || "",
+        growthStages: Array.isArray(resource.growthStages) ? resource.growthStages : [],
+        content: resource.content || {},
+        diagram: resource.diagram || {}
+      },
+      importContext: {
+        taskId: cleanLine(parsed?.taskId),
+        format: cleanLine(parsed?.format),
+        mode: cleanLine(parsed?.mode),
+        expectedSections: Array.isArray(parsed?.expectedSections) ? parsed.expectedSections.map(cleanLine) : [],
+        warnings: (Array.isArray(parsed?.warnings) ? parsed.warnings : []).map(warning => ({
+          level: cleanLine(warning?.level),
+          title: cleanLine(warning?.title),
+          message: cleanLine(warning?.message),
+          action: cleanLine(warning?.action)
+        }))
+      },
+      verificationOptions: {
+        taskId: cleanLine(verificationOptions.taskId || parsed?.taskId),
+        reviewLevel: cleanLine(verificationOptions.reviewLevel),
+        quantity: Number.isFinite(Number(verificationOptions.quantity)) ? Math.max(1, Math.min(Number(verificationOptions.quantity), 20)) : null,
+        vocabularyFocus: cleanLine(verificationOptions.vocabularyFocus),
+        phonicsProgramme: cleanLine(verificationOptions.phonicsProgramme),
+        targetLanguage: cleanLine(verificationOptions.targetLanguage),
+        languageVariant: cleanLine(verificationOptions.languageVariant)
+      },
+      accepted: (parsed?.sections || []).map(section => ({
+        id: section.id || "",
+        mapping: section.mapping || "",
+        items: (section.items || [])
+          .filter(item => ["accepted", "edited"].includes(item.status))
+          .map(item => ({ status: item.status, text: cleanLine(item.editedText ?? item.text) }))
+      })).filter(section => section.items.length),
+      sources: (Array.isArray(sourceRecords) ? sourceRecords : []).map(record => ({
+        type: cleanLine(record.type),
+        title: cleanLine(record.title),
+        author: cleanLine(record.author),
+        date: cleanLine(record.date),
+        publisher: cleanLine(record.publisher),
+        url: cleanLine(record.url),
+        retrievalDate: cleanLine(record.retrievalDate),
+        note: cleanLine(record.note)
+      }))
+    };
+  }
+
+  function verificationFingerprint(scaffold, parsed, sourceRecords = [], verificationOptions = {}) {
+    const payload = verificationPayload(scaffold, parsed, sourceRecords, verificationOptions);
+    const persistence = window.ScaffoldPersistence;
+    if (persistence?.canonicalChecksumSync) return persistence.canonicalChecksumSync(payload);
+    const error = new Error("The local checksum engine is unavailable, so this content cannot be approved safely.");
+    error.name = "VerificationChecksumError";
+    error.code = "VERIFICATION_CHECKSUM_UNAVAILABLE";
+    throw error;
+  }
+
   function makeSourceRecord(text, origin = "AI generated") {
     const source = String(text || "");
     const url = source.match(/https?:\/\/\S+/)?.[0] || "";
@@ -591,8 +678,43 @@
     if (accepted["change-notes"]?.length) next.ai.changeNotes = set("ai.changeNotes", accepted["change-notes"].slice(0, 20));
 
     const verification = details.verification || null;
-    const blocking = verification?.blocking || 0;
-    const approvalValid = Boolean(details.approved && verification && !blocking && !hasPendingDecision && acceptedCount > 0);
+    const findings = Array.isArray(verification?.findings) ? verification.findings : [];
+    const declaredBlocking = Number.isFinite(Number(verification?.blocking)) ? Math.max(0, Number(verification.blocking)) : 0;
+    const findingsBlocking = findings.filter(item => item?.severity === "do-not-use" && !item.resolved).length;
+    const blocking = Math.max(declaredBlocking, findingsBlocking);
+    const currentChecksum = verificationFingerprint(scaffold, parsed, details.sourceRecords, details.verificationOptions);
+    const checkedAt = Date.parse(verification?.checkedAt || "");
+    const verificationCurrent = Boolean(
+      /^[a-f0-9]{64}$/i.test(String(verification?.contentChecksum || "")) &&
+      verification.contentChecksum === currentChecksum &&
+      Array.isArray(verification?.findings) &&
+      Number.isFinite(checkedAt)
+    );
+    if (details.approved && !verificationCurrent) {
+      const error = new Error("Verification no longer matches the scaffold and accepted content. Run verification again before approval.");
+      error.name = "StaleVerificationError";
+      error.code = "STALE_VERIFICATION";
+      throw error;
+    }
+    if (details.approved && hasPendingDecision) {
+      const error = new Error("Every imported item must be accepted, edited or rejected before approval.");
+      error.name = "AIApprovalError";
+      error.code = "AI_DECISIONS_PENDING";
+      throw error;
+    }
+    if (details.approved && acceptedCount === 0) {
+      const error = new Error("At least one reviewed item must be accepted before approval.");
+      error.name = "AIApprovalError";
+      error.code = "AI_NOTHING_ACCEPTED";
+      throw error;
+    }
+    if (details.approved && blocking) {
+      const error = new Error("Unresolved do-not-use findings block approval and application.");
+      error.name = "AIApprovalError";
+      error.code = "AI_VERIFICATION_BLOCKED";
+      throw error;
+    }
+    const approvalValid = Boolean(details.approved && verificationCurrent && verification && !blocking && !hasPendingDecision && acceptedCount > 0);
     const round = {
       id: uid("round"),
       name: details.roundName || details.prompt?.taskName || "AI enhancement",
@@ -605,6 +727,7 @@
       importFormat: parsed.format,
       decisions: parsed.sections.flatMap(section => section.items.map(item => ({ sectionId: section.id, itemId: item.id, status: item.status, finalText: item.editedText ?? item.text }))),
       findings: verification?.findings || [],
+      verificationChecksum: verification?.contentChecksum || "",
       appliedPaths: changedPaths,
       approved: approvalValid,
       approvalScope: details.approvalScope || "resource",
@@ -696,9 +819,10 @@
   }
 
   function statusForResource(resource) {
-    if (resource.reflection?.reduceNext || resource.reflection?.worked === "not-yet") return "revision-suggested";
-    if (resource.lastPrintedAt && resource.reflection) return "used-in-class";
     const status = resource.ai?.status;
+    if (["response-imported", "review-required", "warnings-unresolved"].includes(status)) return status;
+    if (resource.reflection?.removeNext || resource.reflection?.reduceNext || resource.reflection?.worked === "not-yet") return "revision-suggested";
+    if (resource.lastPrintedAt && resource.reflection) return "used-in-class";
     if (status) return status;
     return resource.updatedAt ? "local-draft" : "local-draft";
   }
@@ -756,6 +880,8 @@
     compareSection,
     diffWords,
     acceptedContent,
+    verificationPayload,
+    verificationFingerprint,
     applyAccepted,
     trimContent,
     assessImageSample,

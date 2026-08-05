@@ -58,6 +58,14 @@
     const engine = engineById(scaffold.engineId);
     const declared = String(content.coreTask || scaffold.coreTask || engine.coreTask || "").trim();
     if (declared) return declared;
+    const preserved = String(engine.preserves || "").trim()
+      .replace(/^the pupil['’]s\s+/i, "your ")
+      .replace(/^the writer['’]s\s+/i, "your ");
+    if (preserved) return `Make and justify the central decision: ${preserved}.`;
+    const pupilAction = String(scaffold.pupilAction || "").trim();
+    if (pupilAction) return pupilAction;
+    const essentialThinking = String(scaffold.essentialThinking || "").trim();
+    if (essentialThinking) return essentialThinking;
     const enginePrompts = Array.isArray(engine.prompts) ? engine.prompts.filter(Boolean) : [];
     return String(enginePrompts[enginePrompts.length - 1] || content.independencePrompt || scaffold.essentialThinking || "Make and justify the central subject decision.").trim();
   }
@@ -92,7 +100,7 @@
     const profile = profileFor(scaffold);
     const actions = subjectActions[scaffold.subject] || subjectActions.english;
     const vocabulary = unique([...(scaffold.vocabulary || []), ...(profile.vocabulary || [])]).slice(0, 8);
-    const prompts = unique([...(engine.prompts || []), ...(scaffold.teacherQuestions || []), ...(profile.questions || [])]).slice(0, 6);
+    const prompts = unique([...(engine.prompts || [])]).slice(0, 6);
     const exampleBase = scaffold.subject === "mathematics"
       ? "Complete one structurally similar example. Explain each decision rather than copying a method."
       : scaffold.subject === "science"
@@ -112,8 +120,8 @@
       misconception: scaffold.misconception || profile.misconceptions?.[0] || "",
       teacherNotes: scaffold.teacherNotes || "",
       oralPrompt: "Explain your current idea to a partner. Your partner paraphrases before adding or challenging with a reason.",
-      checkPrompt: scaffold.assessmentOpportunities?.[0] || profile.assessment?.[0] || "Try the core decision without looking at the scaffold.",
-      independencePrompt: scaffold.teacherQuestions?.[0] || profile.questions?.[0] || "What matters here, and how will I check it?",
+      checkPrompt: "Try the central decision without looking at the scaffold. Explain how you checked it.",
+      independencePrompt: "What is the decision I need to make, and how will I check it?",
       diagramType: scaffold.diagram?.type || engine.diagram || "",
       diagramLabels: scaffold.diagram?.labels || [],
       responseSpace: scaffold.content?.responseSpace || "standard",
@@ -157,12 +165,17 @@
   function diagramValidation(type, config = {}) {
     const errors = [];
     const warnings = [];
-    const values = (config.values || []).map(Number).filter(Number.isFinite);
-    const labels = config.labels || [];
+    const rawValues = Array.isArray(config.values) ? config.values : [];
+    const supplied = value => value !== undefined && value !== null && (typeof value !== "string" || value.trim() !== "");
+    const values = rawValues.filter(supplied).map(Number).filter(Number.isFinite);
+    const labels = Array.isArray(config.labels) ? config.labels : [];
     if (!type) return { valid: true, errors, warnings, status: "not-needed" };
+    const supportedTypes = new Set(["array", "bar-model", "causal-chain", "classification-tree", "concept-map", "cycle", "flowchart", "fraction-strip", "number-line", "part-whole", "place-value", "timeline"]);
+    if (!supportedTypes.has(type)) return { valid: false, errors: [`Unknown diagram type: ${type}.`], warnings, status: "invalid" };
+    if (["number-line", "timeline", "part-whole", "bar-model"].includes(type) && rawValues.some(value => supplied(value) && !Number.isFinite(Number(value)))) errors.push("Diagram values must be valid finite numbers; none can be silently omitted.");
     if (["number-line", "timeline"].includes(type) && values.length > 1) {
       for (let index = 1; index < values.length; index += 1) {
-        if (values[index] < values[index - 1]) errors.push("Values must be ordered from left to right.");
+        if (type === "number-line" ? values[index] <= values[index - 1] : values[index] < values[index - 1]) errors.push(type === "number-line" ? "Number-line values must increase from left to right without duplicates." : "Values must be ordered from left to right.");
       }
     }
     if (type === "number-line" && values.length > 2) {
@@ -174,61 +187,94 @@
     if (type === "fraction-strip") {
       const parts = Number(config.parts);
       const numerator = Number(config.numerator);
-      if (config.parts && (!Number.isInteger(parts) || parts < 2 || parts > 24)) errors.push("A fraction strip needs between two and twenty-four equal parts.");
-      if (config.numerator !== undefined && (!Number.isInteger(numerator) || numerator < 0 || numerator > parts)) errors.push("The shaded numerator must be a whole number between zero and the denominator.");
-      if (config.parts === undefined || config.numerator === undefined) warnings.push("Supply a denominator and numerator before treating the fraction strip as value-checked.");
+      if (supplied(config.parts) && (!Number.isInteger(parts) || parts < 2 || parts > 24)) errors.push("A fraction strip needs between two and twenty-four equal parts.");
+      if (supplied(config.numerator) && (!Number.isInteger(numerator) || numerator < 0 || !Number.isInteger(parts) || numerator > parts)) errors.push("The shaded numerator must be a whole number between zero and the denominator.");
+      if (!supplied(config.parts) || !supplied(config.numerator)) warnings.push("Supply a denominator and numerator before treating the fraction strip as value-checked.");
     }
     if (type === "bar-model") {
       if (values.some(value => value <= 0)) errors.push("Bar parts must use positive quantities.");
+      if (values.length > 6 || (!values.length && labels.length > 6)) errors.push("A clear bar model can show no more than six parts on one page.");
       if (values.length && labels.length && ![values.length, values.length + 1].includes(labels.length)) errors.push("Bar labels and numerical parts do not correspond.");
-      if (Number.isFinite(Number(config.total)) && values.length && Math.abs(values.reduce((sum, value) => sum + value, 0) - Number(config.total)) > 0.00001) errors.push("Bar parts do not add to the stated whole.");
+      if (supplied(config.total) && !Number.isFinite(Number(config.total))) errors.push("The stated bar-model whole must be a valid finite number.");
+      if (supplied(config.total) && Number.isFinite(Number(config.total)) && values.length && Math.abs(values.reduce((sum, value) => sum + value, 0) - Number(config.total)) > 0.00001) errors.push("Bar parts do not add to the stated whole.");
       if (!values.length) warnings.push("No bar values were supplied, so this is a schematic relationship rather than a scale-validated model.");
     }
     if (type === "part-whole") {
       if (values.length >= 3 && Math.abs(values[0] - values.slice(1).reduce((sum, value) => sum + value, 0)) > 0.00001) errors.push("The parts do not combine to the stated whole.");
       if (values.length > 0 && values.length < 3) errors.push("A checked part-whole model needs a whole and at least two parts.");
+      if (values.length > 5 || labels.length > 5) errors.push("A clear part-whole model can show one whole and no more than four parts.");
+      if (values.length && labels.length && values.length !== labels.length) errors.push("Part-whole labels and numerical values do not correspond.");
       if (!values.length) warnings.push("No quantities were supplied, so the part-whole model is schematic.");
     }
     if (type === "array") {
       const rows = Number(config.rows);
       const columns = Number(config.columns);
-      if (config.rows && (!Number.isInteger(rows) || rows < 1)) errors.push("Array rows must be a positive whole number.");
-      if (config.columns && (!Number.isInteger(columns) || columns < 1)) errors.push("Array columns must be a positive whole number.");
-      if (Number.isFinite(Number(config.total)) && rows * columns !== Number(config.total)) errors.push("Array rows and columns do not match the stated total.");
-      if (config.rows === undefined || config.columns === undefined || config.total === undefined) warnings.push("Supply rows, columns and total before treating the array as relationship-checked.");
+      if (supplied(config.rows) && (!Number.isInteger(rows) || rows < 1 || rows > 12)) errors.push("Array rows must be a whole number between one and twelve.");
+      if (supplied(config.columns) && (!Number.isInteger(columns) || columns < 1 || columns > 12)) errors.push("Array columns must be a whole number between one and twelve.");
+      if (supplied(config.total) && !Number.isFinite(Number(config.total))) errors.push("The stated array total must be a valid finite number.");
+      if (supplied(config.total) && Number.isFinite(Number(config.total)) && rows * columns !== Number(config.total)) errors.push("Array rows and columns do not match the stated total.");
+      if (!supplied(config.rows) || !supplied(config.columns) || !supplied(config.total)) warnings.push("Supply rows, columns and total before treating the array as relationship-checked.");
     }
     if (type === "timeline" && (!values.length || values.length !== labels.length)) warnings.push("Timeline spacing is schematic until every event has a corresponding value.");
-    if (type === "place-value" && !Number.isFinite(Number(config.value))) warnings.push("No represented number was supplied, so this place-value chart is an unvalidated template.");
-    if (["flowchart", "classification-tree", "causal-chain"].includes(type) && labels.length < 2) errors.push("Add at least two labelled steps or nodes.");
-    if (labels.some(label => String(label).length > 44)) warnings.push("One or more diagram labels are too long for a clear print layout.");
+    if (type === "place-value") {
+      const value = Number(config.value);
+      if (!supplied(config.value)) warnings.push("No represented number was supplied, so this place-value chart is an unvalidated template.");
+      else if (!Number.isSafeInteger(value) || value < 0 || value > 99999999) errors.push("A checked place-value chart needs a whole number from zero to 99,999,999.");
+      if (labels.length > 8) errors.push("A place-value chart can show no more than eight columns on one page.");
+      if (supplied(config.value) && Number.isSafeInteger(value) && value >= 0 && labels.length && labels.length < String(value).length) errors.push("The supplied place-value headings would hide one or more digits of the represented number.");
+      if (labels.length) warnings.push("Custom place-value headings require teacher confirmation before printing.");
+    }
+    if (["flowchart", "classification-tree", "causal-chain", "cycle"].includes(type) && labels.length < 2) errors.push("Add at least two labelled steps or nodes.");
+    if (type === "concept-map" && labels.length < 2) warnings.push("The concept map is a schematic template until at least two subject-specific nodes are supplied.");
+    if (["timeline", "flowchart", "classification-tree", "causal-chain", "concept-map", "cycle"].includes(type) && labels.length > 5) errors.push("This diagram can show no more than five labelled nodes without silently losing information.");
+    if (labels.some(label => String(label).length > 32)) warnings.push("One or more diagram labels will be shortened in print. Use 32 characters or fewer.");
     return { valid: errors.length === 0, errors, warnings, status: errors.length ? "invalid" : warnings.length ? "schematic-review" : "locally-checked" };
   }
 
   function renderDiagram(type, config = {}) {
     const safe = diagramValidation(type, config);
-    const labels = (config.labels || []).map(String).filter(Boolean);
-    const values = (config.values || []).map(Number).filter(Number.isFinite);
-    const label = text => esc(String(text || "Add label").length > 32 ? `${String(text).slice(0, 29).trim()}…` : text || "Add label");
+    const labels = (Array.isArray(config.labels) ? config.labels : []).map(String).filter(Boolean);
+    const values = (Array.isArray(config.values) ? config.values : []).map(Number).filter(Number.isFinite);
+    const label = value => {
+      const text = value === 0 ? "0" : String(value || "Add label");
+      return esc(text.length > 32 ? `${text.slice(0, 29).trim()}…` : text);
+    };
     if (!type) return "";
     if (!safe.valid) return `<div class="diagram-warning"><strong>Diagram needs review</strong><span>${esc(safe.errors.join(" "))}</span></div>`;
     if (type === "number-line") {
       const marks = values.length ? values : [0, 1, 2, 3, 4];
       return `<svg class="local-diagram" viewBox="0 0 640 150" role="img" aria-label="Editable number line"><path d="M52 70H588M52 70l16-9M52 70l16 9M588 70l-16-9M588 70l-16 9"/>${marks.map((value, index) => { const x = 80 + index * (480 / Math.max(1, marks.length - 1)); return `<path d="M${x} 54v32"/><text x="${x}" y="112">${label(value)}</text>`; }).join("")}</svg>`;
     }
-    if (type === "part-whole") return `<svg class="local-diagram" viewBox="0 0 640 230" role="img" aria-label="Part whole model"><title>${esc(safe.warnings.length ? safe.warnings.join(" ") : "A whole connected to two parts")}</title><circle cx="320" cy="62" r="48"/><text x="320" y="67">${label(labels[0] || values[0] || "whole")}</text><path d="M288 100 220 154M352 100l68 54"/><circle cx="205" cy="177" r="48"/><circle cx="435" cy="177" r="48"/><text x="205" y="182">${label(labels[1] || values[1] || "part")}</text><text x="435" y="182">${label(labels[2] || values[2] || "?")}</text></svg>`;
+    if (type === "part-whole") {
+      const partCount = Math.max(2, Math.min(4, Math.max(values.length - 1, labels.length - 1, 2)));
+      const partXs = Array.from({ length: partCount }, (_, index) => partCount === 1 ? 320 : 105 + index * (430 / (partCount - 1)));
+      const branches = partXs.map(x => `<path d="M320 96  ${x} 143"/>`).join("");
+      const partNodes = partXs.map((x, index) => `<circle cx="${x}" cy="181" r="37"/><text x="${x}" y="186">${label(labels[index + 1] ?? values[index + 1] ?? (index ? "?" : "part"))}</text>`).join("");
+      return `<svg class="local-diagram" viewBox="0 0 640 230" role="img" aria-label="Part whole model with ${partCount} parts"><title>${esc(safe.warnings.length ? safe.warnings.join(" ") : `A whole connected to ${partCount} parts`)}</title><circle cx="320" cy="55" r="42"/><text x="320" y="60">${label(labels[0] ?? values[0] ?? "whole")}</text>${branches}${partNodes}</svg>`;
+    }
     if (type === "place-value") {
-      const heads = labels.length ? labels.slice(0, 5) : ["10,000", "1,000", "100", "10", "1"];
-      return `<svg class="local-diagram" viewBox="0 0 640 210" role="img" aria-label="Place value chart">${heads.map((head, index) => `<rect x="${20 + index * 120}" y="30" width="116" height="150"/><text x="${78 + index * 120}" y="62">${label(head)}</text><path d="M${20 + index * 120} 78h116"/>`).join("")}</svg>`;
+      const hasValue = config.value !== undefined && config.value !== null && String(config.value).trim() !== "" && Number.isSafeInteger(Number(config.value)) && Number(config.value) >= 0;
+      const valueText = hasValue ? String(Number(config.value)) : "";
+      const columnCount = labels.length ? Math.min(labels.length, 8) : hasValue ? Math.min(valueText.length, 8) : 3;
+      const heads = labels.length
+        ? labels.slice(0, columnCount)
+        : Array.from({ length: columnCount }, (_, index) => (10 ** (columnCount - index - 1)).toLocaleString("en-GB"));
+      const digits = hasValue ? valueText.padStart(columnCount, "0").slice(-columnCount).split("") : [];
+      const width = 600 / columnCount;
+      return `<svg class="local-diagram" viewBox="0 0 640 210" role="img" aria-label="${hasValue ? `Place value chart representing ${esc(valueText)}` : "Schematic place value chart"}"><title>${hasValue ? `${esc(valueText)} partitioned by place value` : esc(safe.warnings.join(" "))}</title>${heads.map((head, index) => `<rect x="${20 + index * width}" y="30" width="${width - 4}" height="150"/><text x="${20 + index * width + (width - 4) / 2}" y="62">${label(head)}</text><path d="M${20 + index * width} 78h${width - 4}"/>${hasValue ? `<text class="place-value-digit" x="${20 + index * width + (width - 4) / 2}" y="135">${label(digits[index])}</text>` : ""}`).join("")}</svg>`;
     }
     if (type === "array") {
-      const rows = Math.max(2, Math.min(6, Number(config.rows) || 3));
-      const columns = Math.max(2, Math.min(8, Number(config.columns) || 5));
-      return `<svg class="local-diagram" viewBox="0 0 640 230" role="img" aria-label="Array model">${Array.from({ length: rows * columns }, (_, index) => `<circle cx="${160 + (index % columns) * 64}" cy="${48 + Math.floor(index / columns) * 48}" r="13"/>`).join("")}</svg>`;
+      const rows = Math.max(1, Math.min(12, Number(config.rows) || 3));
+      const columns = Math.max(1, Math.min(12, Number(config.columns) || 5));
+      const horizontalGap = columns > 1 ? 480 / (columns - 1) : 48;
+      const verticalGap = rows > 1 ? 154 / (rows - 1) : 48;
+      const radius = Math.max(4, Math.min(13, Math.min(horizontalGap, verticalGap) * .28));
+      return `<svg class="local-diagram" viewBox="0 0 640 230" role="img" aria-label="Array model with ${rows} rows and ${columns} columns">${Array.from({ length: rows * columns }, (_, index) => { const column = index % columns; const row = Math.floor(index / columns); const x = columns === 1 ? 320 : 80 + column * horizontalGap; const y = rows === 1 ? 115 : 38 + row * verticalGap; return `<circle cx="${x}" cy="${y}" r="${radius}"/>`; }).join("")}</svg>`;
     }
     if (type === "bar-model") {
-      const partCount = Math.max(values.length, Math.min(labels.length, 4), 3);
+      const partCount = values.length ? values.length : Math.max(2, Math.min(labels.length || 3, 6));
       const parts = Array.from({ length: partCount }, (_, index) => labels[index] || (values[index] ?? (index === partCount - 1 ? "?" : "known")));
-      const weights = values.length === partCount ? values : Array(partCount).fill(1);
+      const weights = values.length ? values : Array(partCount).fill(1);
       const total = weights.reduce((sum, value) => sum + value, 0) || partCount;
       let cursor = 60;
       const segments = parts.map((part, index) => {
@@ -237,10 +283,11 @@
         cursor += width;
         return segment;
       }).join("");
-      return `<svg class="local-diagram" viewBox="0 0 640 210" role="img" aria-label="${values.length ? "Value-aware bar model" : "Schematic bar model requiring teacher confirmation"}"><title>${esc(values.length ? "Bar widths correspond to the supplied positive quantities." : safe.warnings.join(" "))}</title><rect x="60" y="50" width="520" height="78"/>${segments}<path d="M580 50v78M60 155v18M60 164h520M580 155v18"/><text x="320" y="198">${label(labels[partCount] || config.total || "whole or comparison")}</text></svg>`;
+      const wholeLabel = values.length && labels.length === values.length + 1 ? labels[labels.length - 1] : config.total || "whole or comparison";
+      return `<svg class="local-diagram" viewBox="0 0 640 210" role="img" aria-label="${values.length ? "Value-aware bar model" : "Schematic bar model requiring teacher confirmation"}"><title>${esc(values.length ? "Bar widths correspond to the supplied positive quantities." : safe.warnings.join(" "))}</title><rect x="60" y="50" width="520" height="78"/>${segments}<path d="M580 50v78M60 155v18M60 164h520M580 155v18"/><text x="320" y="198">${label(wholeLabel)}</text></svg>`;
     }
     if (type === "fraction-strip") {
-      const parts = Math.max(2, Math.min(12, Number(config.parts) || 4));
+      const parts = Math.max(2, Math.min(24, Number(config.parts) || 4));
       const numerator = Math.max(0, Math.min(parts, Number(config.numerator) || 0));
       return `<svg class="local-diagram" viewBox="0 0 640 210" role="img" aria-label="Fraction strip divided into ${parts} equal parts with ${numerator} shaded"><title>${numerator}/${parts}</title><rect x="45" y="85" width="550" height="48"/>${Array.from({ length: parts }, (_, index) => `<rect class="${index < numerator ? "diagram-shade" : "diagram-clear"}" x="${45 + index * 550 / parts}" y="85" width="${550 / parts}" height="48"/>${index ? `<path d="M${45 + index * 550 / parts} 85v48"/>` : ""}`).join("")}<text x="320" y="165">${label(`${numerator}/${parts}`)}</text></svg>`;
     }
@@ -251,7 +298,15 @@
       const span = proportional ? Math.max(...values) - minimum : 1;
       return `<svg class="local-diagram" viewBox="0 0 640 210" role="img" aria-label="Timeline ${proportional ? "with proportionally spaced supplied values" : "marked as schematic and not to scale"}"><path d="M55 105H585"/><text x="55" y="28">${proportional ? "Spacing follows supplied values" : "Schematic · not to scale"}</text>${events.map((event, index) => { const x = proportional ? 80 + (values[index] - minimum) / span * 480 : 80 + index * 480 / Math.max(1, events.length - 1); return `<circle cx="${x}" cy="105" r="9"/><path d="M${x} 105v${index % 2 ? 45 : -45}"/><text x="${x}" y="${index % 2 ? 180 : 48}">${label(event)}</text>`; }).join("")}</svg>`;
     }
-    if (["flowchart", "causal-chain", "cycle"].includes(type)) {
+    if (type === "cycle") {
+      const nodes = labels.length ? labels.slice(0, 5) : ["Notice", "Choose", "Try", "Check"];
+      const positions = nodes.map((_, index) => {
+        const angle = -Math.PI / 2 + index * (2 * Math.PI / nodes.length);
+        return { x: 320 + Math.cos(angle) * 220, y: 120 + Math.sin(angle) * 78 };
+      });
+      return `<svg class="local-diagram diagram-cycle" viewBox="0 0 640 240" role="img" aria-label="Cycle returning from the final step to the first"><title>The final step reconnects to the first.</title>${positions.map((point, index) => { const next = positions[(index + 1) % positions.length]; return `<path class="cycle-link" d="M${point.x} ${point.y}L${next.x} ${next.y}"/>`; }).join("")}${positions.map((point, index) => `<rect x="${point.x - 58}" y="${point.y - 24}" width="116" height="48" rx="12"/><text x="${point.x}" y="${point.y + 5}">${label(nodes[index])}</text>`).join("")}</svg>`;
+    }
+    if (["flowchart", "causal-chain"].includes(type)) {
       const nodes = labels.length ? labels.slice(0, 5) : ["Start", "Decision", "Action", "Check"];
       return `<svg class="local-diagram" viewBox="0 0 640 230" role="img" aria-label="${esc(type.replaceAll("-", " "))}">${nodes.map((node, index) => { const x = 28 + index * (584 / nodes.length); const width = 584 / nodes.length - 18; return `<rect x="${x}" y="80" width="${width}" height="64" rx="12"/><text x="${x + width / 2}" y="117">${label(node)}</text>${index < nodes.length - 1 ? `<path d="M${x + width} 112h18m-7-7 7 7-7 7"/>` : ""}`; }).join("")}</svg>`;
     }
@@ -265,7 +320,8 @@
   function renderIndependent(scaffold) {
     const content = scaffold.content;
     const coreTask = coreTaskFor(scaffold, content);
-    return `<div class="independent-resource"><span class="independence-mark">External support removed</span><h2>${esc(scaffold.objective)}</h2><section><strong>Your decision</strong><p>${esc(coreTask)}</p></section><section><strong>Before you begin</strong><p>${esc(content.independencePrompt)}</p></section><section><strong>Afterwards</strong><p>What did you decide for yourself? What evidence shows the learning?</p>${lines(5)}</section></div>`;
+    const selfPrompt = String(content.independencePrompt || "").trim() || "What is the decision I need to make, and how will I check it?";
+    return `<div class="independent-resource"><span class="independence-mark">External support removed</span><h2>${esc(scaffold.objective)}</h2><section><strong>Your decision</strong><p>${esc(coreTask)}</p></section><section><strong>Before you begin</strong><p>${esc(selfPrompt)}</p></section><section><strong>Afterwards</strong><p>What did you decide for yourself? What evidence shows the learning?</p>${lines(5)}</section></div>`;
   }
 
   function renderBody(rawScaffold) {
@@ -276,29 +332,33 @@
     if (scaffold.stage === "independent") return renderIndependent(scaffold);
     const prompts = stagePromptSet(scaffold, content);
     const coreTask = coreTaskFor(scaffold, content);
+    const supportPrompts = prompts.filter(prompt => prompt !== coreTask);
     const vocabulary = content.vocabulary.slice(0, rule.words);
     const diagram = content.diagramType ? `<div class="engine-diagram">${renderDiagram(content.diagramType, scaffold.diagram || { labels: content.diagramLabels })}</div>` : "";
-    const example = rule.example === "none" || content.hiddenSections.includes("example") ? "" : section(rule.example === "modelled" ? "Study one modelled decision" : "Complete the missing decision", `<p>${esc(content.example)}</p>${rule.example === "partial" ? lines(2) : ""}`, "engine-example");
+    const layout = engine.layout || "sequence";
+    const layoutOwnsExample = ["worked", "error"].includes(layout) || (["source", "phrase-strip", "locator", "noticer", "lens", "challenge", "scenario", "primer", "shrinker"].includes(layout) && !diagram);
+    const exampleText = rule.example === "partial" ? String(content.partialExample || "").trim() : String(content.example || "").trim();
+    const example = rule.example === "none" || !exampleText || layoutOwnsExample || content.hiddenSections.includes("example") ? "" : section(rule.example === "modelled" ? "Study one modelled decision" : "Complete the missing decision", `<p>${esc(exampleText)}</p>${rule.example === "partial" ? lines(2) : ""}`, "engine-example");
     const oral = content.oralRehearsal && !content.hiddenSections.includes("oral") ? section("Rehearse before recording", `<p>${esc(content.oralPrompt)}</p>`, "engine-oral") : "";
     const vocabularyHTML = vocabulary.length && !content.hiddenSections.includes("vocabulary") ? `<div class="engine-vocabulary">${vocabulary.map(word => `<span>${esc(word)}</span>`).join("")}</div>` : "";
     const check = section("Independence check", `<p>${esc(content.checkPrompt)}</p>`, "engine-check");
     const intro = `<div class="engine-intro"><p>${esc(instructionForMode(content))}</p><small>${esc(content.subInstruction)}</small>${vocabularyHTML}</div>`;
-    const layout = engine.layout || "sequence";
     let core = "";
 
-    if (["word-cards", "prompt-cards", "cue-card"].includes(layout)) core = promptCards(prompts, layout);
-    else if (["sequence", "flow", "cycle", "route", "causal-chain"].includes(layout)) core = `<div class="engine-sequence">${prompts.map((prompt, index) => `<section><span>${index + 1}</span><div><strong>${esc(prompt)}</strong>${lines(rule.response > 4 ? 2 : 1)}</div></section>`).join("")}</div>`;
-    else if (["bridge", "chain"].includes(layout)) core = `<div class="engine-chain">${prompts.slice(0, 3).map((prompt, index) => `<section><span>${index + 1}</span><strong>${esc(prompt)}</strong>${lines(3)}</section>${index < Math.min(2, prompts.length - 1) ? '<i aria-hidden="true">→</i>' : ""}`).join("")}</div>`;
-    else if (["compare", "choice", "decision-board", "sort"].includes(layout)) core = `<div class="engine-choice"><section><span>Option or case A</span><strong>${esc(prompts[0] || "Notice and record")}</strong>${lines(4)}</section><section><span>Option or case B</span><strong>${esc(prompts[1] || "Compare through the same criterion")}</strong>${lines(4)}</section><section class="engine-decision"><span>Decision</span><strong>${esc(prompts[2] || "Choose and justify")}</strong>${lines(3)}</section></div>`;
-    else if (["table", "test-grid", "quadrant"].includes(layout)) core = `<div class="engine-table"><div class="engine-table-row engine-table-head">${prompts.slice(0, 3).map(prompt => `<strong>${esc(prompt)}</strong>`).join("")}</div>${Array.from({ length: rule.response }, () => `<div class="engine-table-row">${prompts.slice(0, 3).map(() => "<span></span>").join("")}</div>`).join("")}</div>`;
-    else if (["dialogue", "substitution"].includes(layout)) core = `<div class="engine-dialogue"><section><span>A · rehearse</span><strong>${esc(prompts[0] || content.oralPrompt)}</strong>${lines(2)}</section><section><span>B · listen and build</span><strong>${esc(prompts[1] || "Paraphrase, then add or challenge with a reason.")}</strong>${lines(2)}</section><section><span>Together · improve</span><strong>${esc(prompts[2] || content.checkPrompt)}</strong>${lines(2)}</section></div>`;
-    else if (["tree", "network", "map"].includes(layout)) core = `<div class="engine-network"><section class="engine-centre"><strong>${esc(scaffold.topic)}</strong></section>${prompts.slice(0, 4).map(prompt => `<section><strong>${esc(prompt)}</strong>${lines(2)}</section>`).join("")}</div>`;
-    else if (["worked", "error"].includes(layout)) core = `<div class="engine-worked"><section><span>Model or current attempt</span><strong>${esc(content.example)}</strong><div class="worked-steps">${prompts.map((prompt, index) => `<p><b>${index + 1}</b>${esc(prompt)}</p>`).join("")}</div></section><section><span>Your parallel thinking</span>${prompts.map(prompt => `<strong>${esc(prompt)}</strong>${lines(2)}`).join("")}</section></div>`;
-    else if (["math-model", "source", "phrase-strip", "locator", "noticer", "lens", "challenge", "scenario", "primer", "shrinker"].includes(layout)) core = `${diagram || `<div class="engine-stimulus"><span>${layout === "source" ? "Source, text or stimulus" : "Working space"}</span><p>${esc(content.example)}</p></div>`}${promptCards(prompts, layout)}`;
-    else core = `${diagram}${promptCards(prompts, layout)}`;
+    if (["word-cards", "prompt-cards", "cue-card"].includes(layout)) core = promptCards(supportPrompts, layout);
+    else if (["sequence", "flow", "cycle", "route", "causal-chain", "timeline", "ladder"].includes(layout)) core = `<div class="${layout === "ladder" ? "engine-ladder" : "engine-sequence"}">${supportPrompts.map((prompt, index) => `<section class="${layout === "ladder" ? "ladder-rung" : ""}"><span>${index + 1}</span><div><strong>${esc(prompt)}</strong>${lines(rule.response > 4 ? 2 : 1)}</div></section>`).join("")}</div>`;
+    else if (["bridge", "chain"].includes(layout)) core = `<div class="engine-chain">${supportPrompts.slice(0, 3).map((prompt, index) => `<section><span>${index + 1}</span><strong>${esc(prompt)}</strong>${lines(3)}</section>${index < Math.min(2, supportPrompts.length - 1) ? '<i aria-hidden="true">→</i>' : ""}`).join("")}</div>`;
+    else if (["compare", "choice", "decision-board", "sort"].includes(layout)) core = `<div class="engine-choice">${supportPrompts.map((prompt, index) => `<section><span>${index === 0 ? "Option or case A" : index === 1 ? "Option or case B" : "Use the same criterion"}</span><strong>${esc(prompt)}</strong>${lines(3)}</section>`).join("")}</div>`;
+    else if (["table", "test-grid", "quadrant"].includes(layout)) core = supportPrompts.length ? `<div class="engine-table"><div class="engine-table-row engine-table-head">${supportPrompts.slice(0, 3).map(prompt => `<strong>${esc(prompt)}</strong>`).join("")}</div>${Array.from({ length: rule.response }, () => `<div class="engine-table-row">${supportPrompts.slice(0, 3).map(() => "<span></span>").join("")}</div>`).join("")}</div>` : "";
+    else if (["dialogue", "substitution"].includes(layout)) core = `<div class="engine-dialogue">${supportPrompts.map((prompt, index) => `<section><span>${index === 0 ? "A · rehearse" : index === 1 ? "B · listen and build" : "Together · improve"}</span><strong>${esc(prompt)}</strong>${lines(2)}</section>`).join("")}</div>`;
+    else if (["tree", "network", "map"].includes(layout)) core = `<div class="engine-network"><section class="engine-centre"><strong>${esc(scaffold.topic)}</strong></section>${supportPrompts.slice(0, 4).map(prompt => `<section><strong>${esc(prompt)}</strong>${lines(2)}</section>`).join("")}</div>`;
+    else if (["worked", "error"].includes(layout)) core = `<div class="engine-worked">${exampleText ? `<section><span>Model or current attempt</span><strong>${esc(exampleText)}</strong><div class="worked-steps">${supportPrompts.map((prompt, index) => `<p><b>${index + 1}</b>${esc(prompt)}</p>`).join("")}</div></section>` : ""}<section><span>Your parallel thinking</span>${lines(Math.max(3, rule.response))}</section></div>`;
+    else if (["math-model", "source", "phrase-strip", "locator", "noticer", "lens", "challenge", "scenario", "primer", "shrinker"].includes(layout)) core = `${diagram || (exampleText ? `<div class="engine-stimulus"><span>${layout === "source" ? "Source, text or stimulus" : "Working space"}</span><p>${esc(exampleText)}</p></div>` : "")}${promptCards(supportPrompts, layout)}`;
+    else core = `${diagram}${promptCards(supportPrompts, layout)}`;
+    if (diagram && !core.includes('class="engine-diagram"')) core = `${diagram}${core}`;
 
     const protectedDecision = `<section class="engine-core-task"><span>Your subject decision</span><strong>${esc(coreTask)}</strong><small>This remains yours at every growth stage.</small></section>`;
-    return `${intro}${example}${core}${protectedDecision}${oral}${check}<div class="engine-fade-note"><strong>Next fade</strong><span>${esc(nextFade(scaffold))}</span></div>`;
+    return `${intro}${example}${core}${protectedDecision}${oral}${check}`;
   }
 
   function nextFade(scaffold) {
@@ -315,7 +375,8 @@
     const scaffold = normalise(rawScaffold);
     const content = scaffold.content;
     const issues = [];
-    const combined = [content.instruction, content.example, ...content.prompts].join(" ");
+    const pupilFields = [content.instruction, content.subInstruction, ...content.prompts, content.coreTask, content.oralPrompt, content.checkPrompt, content.independencePrompt].filter(Boolean);
+    const combined = [content.example, content.partialExample, ...pupilFields].join(" ");
     if (!String(scaffold.objective || "").trim()) issues.push({ type: "error", code: "objective", message: "Learning objective is missing." });
     if (!String(scaffold.situation || "").trim()) issues.push({ type: "review", code: "barrier", message: "The observed sticking point needs a precise description." });
     if (!String(scaffold.essentialThinking || scaffold.disciplinaryThinking || "").trim()) issues.push({ type: "error", code: "thinking", message: "The essential pupil thinking has not been protected explicitly." });
@@ -323,7 +384,9 @@
     if (words(content.instruction).length > 32) issues.push({ type: "review", code: "instruction-load", message: "The pupil instruction is longer than one manageable entry step." });
     if (content.vocabulary.length > 8) issues.push({ type: "review", code: "vocabulary-load", message: "More than eight vocabulary items may increase visual and retrieval load." });
     if (/low ability|middle ability|high ability|bottom group|weak pupil|low attainer/i.test(combined)) issues.push({ type: "error", code: "fixed-label", message: "Fixed-ability language must be replaced with a temporary, observable barrier." });
-    if (/the answer is|therefore the answer|copy this answer/i.test(combined)) issues.push({ type: "error", code: "answer-leak", message: "The resource may reveal the pupil's conclusion or answer." });
+    const completedCalculation = /\b-?\d+(?:\.\d+)?\s*(?:[+\-×x*÷/])\s*-?\d+(?:\.\d+)?\s*=\s*-?\d+(?:\.\d+)?\b/i;
+    const directiveAnswer = /\b(?:write|record|choose|answer)\s+(?:is\s+)?-?\d+(?:\.\d+)?\b|\b(?:the answer|the total|the result)\s+(?:is|equals)\s+-?\d+(?:\.\d+)?\b/i;
+    if (/the answer is|therefore the answer|copy this answer/i.test(combined) || pupilFields.some(field => completedCalculation.test(String(field)) || directiveAnswer.test(String(field)))) issues.push({ type: "error", code: "answer-leak", message: "A pupil-facing cue contains a completed calculation or conclusion. Keep worked answers in a genuinely parallel model, not in the task prompts." });
     const visiblePrompts = stagePromptSet(scaffold, content);
     const coreTask = coreTaskFor(scaffold, content);
     if (scaffold.stage !== "independent" && coreTask && !visiblePrompts.includes(coreTask)) issues.push({ type: "error", code: "core-task", message: "The growth stage has removed the engine's protected pupil decision." });
@@ -342,7 +405,10 @@
     const judgement = (label, status, reason, action = "") => ({ label, status, reason, action });
     const entry = (subject.entries || []).find(item => item.title === scaffold.topic && (item.years || []).includes(scaffold.year));
     const objectiveMapped = entry?.objectives?.includes(scaffold.objective);
-    const objectiveStatus = objectiveMapped ? "Strong" : entry ? "Teacher review needed" : "Not locally established";
+    const objectivesForYear = entry?.objectivesByYear?.[scaffold.year];
+    const declaredObjectiveYears = entry?.objectiveYears?.[scaffold.objective];
+    const objectiveYearExact = Boolean(objectiveMapped && ((Array.isArray(objectivesForYear) && objectivesForYear.includes(scaffold.objective)) || (Array.isArray(declaredObjectiveYears) && declaredObjectiveYears.includes(scaffold.year)) || (entry.years || []).length === 1));
+    const objectiveStatus = objectiveYearExact ? "Strong" : entry ? "Teacher review needed" : "Not locally established";
     const engineCompatible = (engine.subjects || []).includes(scaffold.subject) || (engine.subjects || []).includes("all");
     const barrierFit = (engine.barriers || []).some(id => (scaffold.barriers || []).includes(id));
     const profile = supportProfile(scaffold);
@@ -350,7 +416,7 @@
     const representation = diagramValidation(scaffold.content.diagramType, scaffold.diagram || { labels: scaffold.content.diagramLabels });
     const print = printPreflight(scaffold, scaffold.format || "workpage", { paper: "a4", orientation: "portrait", colour: "full-colour" });
     return [
-      judgement("Curriculum integrity", objectiveStatus, objectiveMapped ? "The objective maps to the selected year and curriculum context." : entry ? "The objective is teacher-edited, so local year alignment cannot be established automatically." : "The selected topic is not mapped locally for this subject and year.", "Confirm the exact intended learning and year alignment."),
+      judgement("Curriculum integrity", objectiveStatus, objectiveYearExact ? "The objective is explicitly mapped to the selected year in the local curriculum data." : objectiveMapped ? "The objective belongs to this curriculum area, but the multi-year record does not establish an exact selected-year match." : entry ? "The objective is teacher-edited, so local year alignment cannot be established automatically." : "The selected topic is not mapped locally for this subject and year.", "Confirm the exact intended learning and year alignment."),
       judgement("Barrier precision", has("barrier") ? "Review recommended" : "Strong", has("barrier") ? "The sticking point is not yet precise enough." : "The support responds to an observable point of breakdown.", "Name what pupils can do and where success stops."),
       judgement("Intellectual ownership", has("thinking") || has("answer-leak") || has("core-task") ? "Possible over-scaffolding" : "Strong", has("answer-leak") ? "A prompt may reveal the conclusion." : has("core-task") ? "The core pupil decision disappeared during fading." : `Every visible stage retains ${engine.preserves || "the central pupil decision"}.`, "Remove task-completing support, never the protected decision."),
       judgement("Subject authenticity", engineCompatible ? "Strong" : "Not locally established", engineCompatible ? `${engine.name} is declared for ${subject.name} and retains its disciplinary action.` : `${engine.name} is not declared as compatible with ${subject.name}.`, "Choose a subject-compatible engine or record the professional reason for overriding it."),

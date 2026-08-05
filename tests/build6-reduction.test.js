@@ -73,7 +73,7 @@ check(!/data-library-filter="(?:family|format|stage|source)"/.test(library), "Lo
 check(/<details class="card-more">/.test(library), "Rare resource maintenance actions are grouped once per card");
 
 const print = bodyOf("renderPrintStudio", "renderSettings");
-check(/Ready to print/.test(print) && /class="button button-primary print-primary"/.test(print), "Print leads with readiness and the print action");
+check(/Ready for physical preview/.test(print) && /class="button button-primary print-primary"/.test(print), "Print leads with honest preview readiness and the print action");
 check(/<details class="print-options">/.test(print), "Specialist print controls use progressive disclosure");
 check((print.match(/data-print-select=/g) || []).length >= 3, "Paper, orientation and style remain adjustable");
 

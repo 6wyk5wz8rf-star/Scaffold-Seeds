@@ -7,6 +7,7 @@ require("../build3-data.js");
 require("../build4-data.js");
 require("../resource-engine.js");
 require("../verification-engine.js");
+require("../persistence.js");
 require("../ai-companion.js");
 
 const DATA = global.SCAFFOLD_DATA;
@@ -144,7 +145,14 @@ selective = AI.setItemDecision(selective, exampleItems[1].id, "rejected");
 const answerItem = selective.sections.find(section => section.id === "answers").items[0];
 selective = AI.setItemDecision(selective, answerItem.id, "edited", "Teacher-edited answer");
 const base = scaffold("english");
-const applied = AI.applyAccepted(base, selective, { prompt: packet, approved: true, verification: { blocking: 0, findings: [], reviewLevel: "careful" }, roundName: "Selective test" });
+const selectiveReviewInput = {
+  ...JSON.parse(JSON.stringify(selective)),
+  raw: "",
+  sections: selective.sections.map(section => ({ ...JSON.parse(JSON.stringify(section)), items: section.items.filter(item => ["accepted", "edited"].includes(item.status)) })).filter(section => section.items.length)
+};
+const selectiveVerification = VERIFY.verify(base, selectiveReviewInput, { taskId: selective.taskId, reviewLevel: "careful" });
+selectiveVerification.contentChecksum = AI.verificationFingerprint(base, selective, []);
+const applied = AI.applyAccepted(base, selective, { prompt: packet, approved: true, verification: selectiveVerification, roundName: "Selective test" });
 check(applied.resource.objective === base.objective && applied.resource.engineId === base.engineId, "Applying content preserves objective and engine");
 check(applied.resource.content.example.includes("Keep this example") && !applied.resource.content.example.includes("Reject this example"), "Only accepted items are rebuilt");
 check(applied.resource.content.answerGuidance.includes("Teacher-edited answer"), "Teacher edits are applied");

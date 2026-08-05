@@ -1,6 +1,6 @@
 "use strict";
 
-const CACHE_NAME = "scaffold-seeds-v6-reduced";
+const CACHE_NAME = "scaffold-seeds-v7-certified";
 const APP_SHELL = [
   "./",
   "./index.html",

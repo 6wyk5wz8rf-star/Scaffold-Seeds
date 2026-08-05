@@ -231,7 +231,9 @@ run("Evidence-based quality audit", () => {
   const aligned = scaffoldFor(validEngine, "Year 4");
   const alignedAudit = RESOURCE.qualityAudit(aligned);
   const alignedCurriculum = alignedAudit.find(item => item.label === "Curriculum integrity");
-  check(alignedCurriculum?.status === "Strong", "A locally mapped objective should pass curriculum integrity.");
+  const alignedEntry = entryFor(aligned.subject, aligned.year);
+  const exactYearMapping = alignedEntry?.years?.length === 1 || alignedEntry?.objectivesByYear?.[aligned.year]?.includes(aligned.objective);
+  check(alignedCurriculum?.status === (exactYearMapping ? "Strong" : "Teacher review needed"), "Curriculum integrity must distinguish exact-year evidence from a broad multi-year curriculum-area match.");
 
   const incompatible = DATA.engines.find(engine => !engine.subjects.includes("all") && !engine.subjects.includes("history"));
   const historyEntry = entryFor("history", "Year 4");
